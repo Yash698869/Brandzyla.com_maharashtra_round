@@ -1,11 +1,11 @@
 import express from 'express';
 import { Contract, JsonRpcProvider, verifyMessage, keccak256 } from 'ethers';
 import { validateDeployment } from '../shared/chain-safety.mjs';
-import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, readdirSync } from 'node:fs';
-import { basename } from 'node:path';
+import { readFileSync, existsSync } from 'node:fs';
 import { randomBytes, randomInt, pbkdf2Sync } from 'node:crypto';
 import { digest, identityMessage, releaseMessage } from '../shared/protocol.mjs';
 import { validatePackageShape, validateIdentity, validateReleaseContext, validateRecoveryKit, validateRegistration } from './validation.mjs';
+import { initStorage } from './storage.mjs';
 
 if (existsSync('.env') && typeof process.loadEnvFile === 'function') {
   try { process.loadEnvFile(); } catch { }
@@ -19,40 +19,13 @@ async function verifyDeployment() {
   validateDeployment(config, { chainId: Number(chainId), blockHash: block?.hash, codeHash: keccak256(code) });
 }
 await verifyDeployment();
-const file = `.runtime/relay-${config.deploymentId.slice(2, 18)}.json`;
-let data = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { identities: {}, packages: {}, releases: {} };
-if (!data.identities) data.identities = {};
-if (!data.packages) data.packages = {};
-if (!data.releases) data.releases = {};
-if (!data.users) data.users = {};
-if (!data.sessions) data.sessions = {};
 
-if (existsSync('.runtime') && (!Object.keys(data.users).length || !Object.keys(data.sessions).length)) {
-  for (const prev of readdirSync('.runtime')) {
-    if (prev.startsWith('relay-') && prev.endsWith('.json') && prev !== basename(file)) {
-      try {
-        const prevData = JSON.parse(readFileSync(`.runtime/${prev}`, 'utf8'));
-        if (prevData.users && Object.keys(prevData.users).length) {
-          data.users = { ...prevData.users, ...data.users };
-        }
-        if (prevData.sessions && Object.keys(prevData.sessions).length) {
-          data.sessions = { ...prevData.sessions, ...data.sessions };
-        }
-      } catch {}
-    }
-  }
-}
+const storage = await initStorage({
+  deploymentId: config.deploymentId,
+  databaseUrl: process.env.DATABASE_URL
+});
 
-function save(next = data) {
-  if (!next || typeof next !== 'object') {
-    throw new Error('Data payload required to persist relay state');
-  }
-  mkdirSync('.runtime', { recursive: true });
-  writeFileSync(`${file}.tmp`, JSON.stringify(next));
-  renameSync(`${file}.tmp`, file);
-  data = next;
-}
-const same = (a, b) => a.toLowerCase() === b.toLowerCase();
+const same = (a, b) => typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase();
 const route = fn => async (req, res, next) => { try { await fn(req, res); } catch (e) { next(e); } };
 function deployment(p) { if (p.binding.chainId !== config.chainId || !same(p.binding.contract, config.contractAddress)) throw new Error('Wrong chain or contract'); }
 function validSignature(message, signature, address) { if (!same(verifyMessage(message, signature), address)) throw new Error('Invalid wallet signature'); }
@@ -73,7 +46,8 @@ app.get('/api/config', route(async (_req, res) => {
   await verifyDeployment();
   const block = await provider.getBlock('latest');
   const demoActors = (config.actors || []).map(a => ({ ...a, isDemo: true }));
-  const registeredActors = Object.values(data.users || {}).map(u => ({
+  const users = await storage.getUsers();
+  const registeredActors = users.map(u => ({
     address: u.address,
     name: u.name,
     role: u.role,
@@ -97,9 +71,11 @@ app.get('/api/config', route(async (_req, res) => {
     blockNumber: block.number
   });
 }));
-app.get('/api/identities', (_req, res) => {
-  const list = Object.values(data.identities).map(id => {
-    const user = Object.values(data.users || {}).find(u => same(u.address, id.address));
+app.get('/api/identities', route(async (_req, res) => {
+  const identities = await storage.getIdentities();
+  const users = await storage.getUsers();
+  const list = identities.map(id => {
+    const user = users.find(u => same(u.address, id.address));
     const actor = config.actors?.find(a => same(a.address, id.address));
     const name = user?.name || actor?.name || id.name;
     const role = user?.role || actor?.role || id.role;
@@ -110,25 +86,28 @@ app.get('/api/identities', (_req, res) => {
     };
   });
   res.json(list);
-});
+}));
 app.post('/api/identities', route(async (req, res) => {
   const identity = req.body; const address = identity.address?.toLowerCase();
-  validateIdentity(identity, data.identities[address]);
+  const existingIdentity = await storage.getIdentity(address);
+  validateIdentity(identity, existingIdentity ?? undefined);
   validSignature(identityMessage(config, identity.address, identity.publicKey), identity.signature, identity.address);
-  const user = Object.values(data.users || {}).find(u => same(u.address, identity.address));
+  const user = await storage.getUserByAddress(identity.address);
   const actor = config.actors?.find(a => same(a.address, identity.address));
   const recordToSave = {
     ...identity,
-    ...(identity.name || user?.name || actor?.name || data.identities[address]?.name ? { name: identity.name || user?.name || actor?.name || data.identities[address]?.name } : {}),
-    ...(identity.role || user?.role || actor?.role || data.identities[address]?.role ? { role: identity.role || user?.role || actor?.role || data.identities[address]?.role } : {})
+    address,
+    ...(identity.name || user?.name || actor?.name || existingIdentity?.name ? { name: identity.name || user?.name || actor?.name || existingIdentity?.name } : {}),
+    ...(identity.role || user?.role || actor?.role || existingIdentity?.role ? { role: identity.role || user?.role || actor?.role || existingIdentity?.role } : {})
   };
-  save({ ...data, identities: { ...data.identities, [address]: recordToSave } }); res.json({ ok: true });
+  await storage.saveIdentity(recordToSave);
+  res.json({ ok: true });
 }));
-app.get('/api/packages', (_req, res) => res.json(Object.values(data.packages)));
+app.get('/api/packages', route(async (_req, res) => res.json(await storage.getPackages())));
 app.get('/api/kits/:vaultId', route(async (req, res) => {
   const { vaultId } = req.params;
   if (!/^0x[0-9a-fA-F]{64}$/.test(vaultId)) throw new Error('Invalid vault identifier');
-  const p = data.packages[vaultId];
+  const p = await storage.getPackage(vaultId);
   if (!p) return res.status(404).json({ error: 'Encrypted package missing' });
   deployment(p);
   validateRegistration(p, await vaultState(vaultId));
@@ -139,17 +118,18 @@ app.post('/api/packages', route(async (req, res) => {
   const p = req.body.package; validatePackageShape(p); deployment(p);
   if (req.body.format) validateRecoveryKit(req.body, config);
   const v = await vaultState(p.binding.vaultId); validateRegistration(p, v);
-  const previous = data.packages[p.binding.vaultId];
+  const previous = await storage.getPackage(p.binding.vaultId);
   if (previous && digest(previous) !== digest(p)) throw new Error('Vault packages are immutable');
-  save({ ...data, packages: { ...data.packages, [p.binding.vaultId]: p } }); res.json({ ok: true });
+  await storage.savePackage(p.binding.vaultId, p);
+  res.json({ ok: true });
 }));
 app.get('/api/releases/:vaultId', route(async (req, res) => {
   if (!/^0x[0-9a-fA-F]{64}$/.test(req.params.vaultId)) throw new Error('Invalid vault identifier');
-  res.json(data.releases[req.params.vaultId] ?? []);
+  res.json(await storage.getReleases(req.params.vaultId));
 }));
 app.post('/api/releases', route(async (req, res) => {
   const { release, signature } = req.body;
-  const p = data.packages[release?.binding?.vaultId]; if (!p) throw new Error('Encrypted package missing'); deployment(p);
+  const p = await storage.getPackage(release?.binding?.vaultId); if (!p) throw new Error('Encrypted package missing'); deployment(p);
   const v = await vaultState(p.binding.vaultId); validateRegistration(p, v); validateReleaseContext(release, p, v);
   validSignature(releaseMessage(release), signature, release.guardian);
   if (config.mode === 'public') {
@@ -157,10 +137,10 @@ app.post('/api/releases', route(async (req, res) => {
     const event = finalEvents.at(-1); const tip = await provider.getBlockNumber();
     if (!event || tip - event.blockNumber + 1 < config.confirmations) throw new Error(`Wait for ${config.confirmations} chain confirmations before releasing shares`);
   }
-  const entries = data.releases[p.binding.vaultId] ?? [];
-  const previous = entries.find(e => same(e.release.guardian, release.guardian) && e.release.requestId === release.requestId);
+  const entries = await storage.getReleases(p.binding.vaultId);
+  const previous = entries.find(e => same(e.release.guardian, release.guardian) && Number(e.release.requestId) === Number(release.requestId));
   if (previous && digest(previous.release) !== digest(release)) throw new Error('This guardian already released a share for this request');
-  if (!previous) save({ ...data, releases: { ...data.releases, [p.binding.vaultId]: [...entries, { release, signature }] } });
+  if (!previous) await storage.saveRelease(p.binding.vaultId, { release, signature });
   res.json({ ok: true });
 }));
 app.post('/api/clock', route(async (req, res) => {
@@ -382,21 +362,28 @@ function hashPassword(password, salt) {
 }
 
 async function allocateAddress(preferredAddress) {
+  const users = await storage.getUsers();
+  const usedAddresses = new Set([
+    ...(config.actors || []).map(a => a.address.toLowerCase()),
+    ...users.map(u => u.address.toLowerCase())
+  ]);
   if (preferredAddress && /^0x[0-9a-fA-F]{40}$/.test(preferredAddress)) {
-    return preferredAddress.toLowerCase();
+    const cleanPreferred = preferredAddress.toLowerCase();
+    if (!usedAddresses.has(cleanPreferred)) {
+      return cleanPreferred;
+    }
   }
   if (config.mode === 'local') {
     try {
       const allAccounts = await provider.listAccounts();
-      const usedAddresses = new Set([
-        ...config.actors.map(a => a.address.toLowerCase()),
-        ...Object.values(data.users || {}).map(u => u.address.toLowerCase())
-      ]);
       const available = allAccounts.find(a => !usedAddresses.has(a.address.toLowerCase()));
       if (available) return available.address.toLowerCase();
     } catch { }
   }
-  return `0x${randomBytes(20).toString('hex')}`.toLowerCase();
+  while (true) {
+    const candidate = `0x${randomBytes(20).toString('hex')}`.toLowerCase();
+    if (!usedAddresses.has(candidate)) return candidate;
+  }
 }
 
 app.post('/api/auth/register', route(async (req, res) => {
@@ -415,8 +402,8 @@ app.post('/api/auth/register', route(async (req, res) => {
     throw new Error('Please verify your email address with the verification code first.');
   }
 
-  const users = data.users || {};
-  if (users[cleanEmail]) {
+  const existingUser = await storage.getUserByEmail(cleanEmail);
+  if (existingUser) {
     throw new Error('An account with this email address already exists. Please log in.');
   }
 
@@ -437,6 +424,7 @@ app.post('/api/auth/register', route(async (req, res) => {
     createdAt: Date.now()
   };
 
+  const token = randomBytes(32).toString('hex');
   const session = {
     userId: user.id,
     email: user.email,
@@ -444,21 +432,18 @@ app.post('/api/auth/register', route(async (req, res) => {
     expiresAt: Date.now() + 7 * 86400 * 1000
   };
 
-  const nextIdentities = { ...data.identities };
-  if (nextIdentities[assignedAddress]) {
-    nextIdentities[assignedAddress] = {
-      ...nextIdentities[assignedAddress],
+  await storage.createUser(user);
+  await storage.saveSession(token, session);
+
+  const existingIdentity = await storage.getIdentity(assignedAddress);
+  if (existingIdentity) {
+    await storage.saveIdentity({
+      ...existingIdentity,
       name: cleanName,
       role: cleanRole
-    };
+    });
   }
 
-  save({
-    ...data,
-    identities: nextIdentities,
-    users: { ...(data.users || {}), [cleanEmail]: user },
-    sessions: { ...(data.sessions || {}), [token]: session }
-  });
   verifiedEmails.delete(cleanEmail);
 
   res.json({
@@ -482,8 +467,7 @@ app.post('/api/auth/login', route(async (req, res) => {
     throw new Error('Email and password are required');
   }
 
-  data.users = data.users || {};
-  const user = data.users[cleanEmail];
+  const user = await storage.getUserByEmail(cleanEmail);
   if (!user) throw new Error('Invalid email or password');
 
   if (!user.salt || !user.passwordHash) {
@@ -508,10 +492,7 @@ app.post('/api/auth/login', route(async (req, res) => {
     createdAt: Date.now(),
     expiresAt: Date.now() + 7 * 86400 * 1000
   };
-  save({
-    ...data,
-    sessions: { ...(data.sessions || {}), [token]: session }
-  });
+  await storage.saveSession(token, session);
 
   res.json({
     ok: true,
@@ -542,10 +523,7 @@ app.post('/api/auth/demo-login', route(async (req, res) => {
     createdAt: Date.now(),
     expiresAt: Date.now() + 7 * 86400 * 1000
   };
-  save({
-    ...data,
-    sessions: { ...(data.sessions || {}), [token]: session }
-  });
+  await storage.saveSession(token, session);
 
   res.json({
     ok: true,
@@ -567,10 +545,9 @@ app.get('/api/auth/session', route(async (req, res) => {
   const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : req.query.token;
   if (!token) return res.json({ ok: false, user: null });
 
-  data.sessions = data.sessions || {};
-  const session = data.sessions[token];
+  const session = await storage.getSession(token);
   if (!session || Date.now() > session.expiresAt) {
-    if (session) delete data.sessions[token];
+    if (session) await storage.deleteSession(token);
     return res.json({ ok: false, user: null });
   }
 
@@ -592,8 +569,7 @@ app.get('/api/auth/session', route(async (req, res) => {
     }
   }
 
-  data.users = data.users || {};
-  const user = data.users[session.email];
+  const user = await storage.getUserByEmail(session.email);
   if (!user) return res.json({ ok: false, user: null });
 
   res.json({
@@ -612,10 +588,8 @@ app.get('/api/auth/session', route(async (req, res) => {
 app.post('/api/auth/logout', route(async (req, res) => {
   const authHeader = req.headers.authorization;
   const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : req.body?.token;
-  if (token && data.sessions?.[token]) {
-    const nextSessions = { ...data.sessions };
-    delete nextSessions[token];
-    save({ ...data, sessions: nextSessions });
+  if (token) {
+    await storage.deleteSession(token);
   }
   res.json({ ok: true });
 }));
@@ -630,4 +604,6 @@ app.use((req, res, next) => {
 });
 app.use((error, _req, res, _next) => { res.status(400).json({ error: error.reason ?? error.shortMessage ?? error.message ?? 'Request rejected' }); });
 const port = Number(process.env.HEIRLOOM_RELAY_PORT ?? 3001);
-app.listen(port, '127.0.0.1', () => console.log(`Encrypted relay → http://127.0.0.1:${port} (${config.mode})`));
+const server = app.listen(port, '127.0.0.1', () => console.log(`Encrypted relay → http://127.0.0.1:${port} (${config.mode})`));
+
+export { app, storage, server };

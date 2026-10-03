@@ -29,6 +29,7 @@
     "ethers": "^6.15.0",
     "express": "^5.1.0",
     "lucide-react": "^0.468.0",
+    "pg": "^8.23.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "shamir-secret-sharing": "0.0.4"
@@ -39,6 +40,7 @@
     "@vitejs/plugin-react": "^4.5.0",
     "fake-indexeddb": "^6.2.5",
     "hardhat": "^3.0.0",
+    "pg-mem": "^3.0.14",
     "solc": "0.8.30",
     "typescript": "~5.8.3",
     "vite": "^6.3.5",

@@ -8,3 +8,4 @@ public/heirloom-contract.json
 .env
 *.log
 *.tsbuildinfo
+.agents/
