@@ -31,7 +31,7 @@ In a second terminal, run `npm run demo:check` immediately before judges arrive.
 
 **Can guardians collude?** A sufficient two-guardian quorum can collude off-chain. Heirloom minimizes single-party trust; it does not eliminate threshold collusion or prove death automatically.
 
-**What would you build next?** Encrypted identity backup, separate-device custody, hosted ciphertext replication, guardian rotation, notification delivery, legal evidence adapters, and an external security review.
+**What would you build next?** New public-mode identities now have an encrypted backup and restore flow. The next steps are separate-device custody, hosted ciphertext replication, guardian rotation, notification delivery, legal evidence adapters, and an external security review. Existing local demo identities are unbacked legacy keys.
 
 ## Closing — 15 seconds
 
