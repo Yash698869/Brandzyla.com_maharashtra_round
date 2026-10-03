@@ -1,5 +1,6 @@
-import { BrowserProvider, Contract, JsonRpcProvider, keccak256, type Signer, type Eip1193Provider, type EventLog } from 'ethers';
+import { BrowserProvider, Contract, JsonRpcProvider, Wallet, keccak256, type Signer, type Eip1193Provider, type EventLog } from 'ethers';
 import { validateDeployment, validateFinality } from '../../shared/chain-safety.mjs';
+import { getStoredPrivateKey } from './auth';
 import type { Config, VaultState, TimelineEvent } from './types';
 
 declare global { interface Window { ethereum?: Eip1193Provider & { on?: (event: string, fn: (...args: any[]) => void) => void } } }
@@ -11,6 +12,8 @@ export function initializeChain(config: Config) {
   readProvider.pollingInterval = 400;
 }
 export async function signerFor(config: Config, address?: string): Promise<Signer> {
+  const privateKey = getStoredPrivateKey(address);
+  if (privateKey && readProvider) return new Wallet(privateKey, readProvider);
   if (config.mode === 'local') return (readProvider as JsonRpcProvider).getSigner(address);
   if (!walletProvider) throw new Error('Connect your Ethereum wallet');
   const network = await walletProvider.getNetwork(); if (Number(network.chainId) !== config.chainId) throw new Error('Switch your wallet to Ethereum Sepolia');

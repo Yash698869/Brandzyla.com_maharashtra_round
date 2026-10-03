@@ -1,9 +1,34 @@
 import type { Config, ProtectedPackage, IdentityRecord, ShareRelease } from './types';
 
-export async function request<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(`/api/${path}`, { method: body ? 'POST' : 'GET', headers: body ? { 'Content-Type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined });
-  const data = await response.json(); if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`); return data;
+let cachedToken: string | null = null;
+
+export function setApiAuthToken(token: string | null) {
+  cachedToken = token;
 }
+
+export function getApiAuthToken(): string | null {
+  return cachedToken || (typeof localStorage !== 'undefined' ? localStorage.getItem('heirloom_auth_token') : null);
+}
+
+export async function request<T>(path: string, body?: unknown, customToken?: string): Promise<T> {
+  const token = customToken || getApiAuthToken();
+  const headers: Record<string, string> = {};
+  if (body) headers['Content-Type'] = 'application/json';
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const response = await fetch(`/api/${path}`, {
+    method: body ? 'POST' : 'GET',
+    headers: Object.keys(headers).length > 0 ? headers : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error || `Request failed (${response.status})`);
+  }
+  return data;
+}
+
 export const api = {
   config: () => request<Config & { blockTimestamp: number; blockNumber: number }>('config'),
   identities: () => request<IdentityRecord[]>('identities'),
@@ -13,4 +38,18 @@ export const api = {
   releases: (id: string) => request<{ release: ShareRelease; signature: string }[]>(`releases/${id}`),
   release: (release: ShareRelease, signature: string) => request('releases', { release, signature }),
   clock: (seconds: number) => request('clock', { seconds }),
+  sendOtp: (email: string) =>
+    request<{ ok: boolean; message: string; devCode?: string; devNotice?: string }>('auth/send-otp', { email }),
+  verifyOtp: (email: string, code: string) =>
+    request<{ ok: boolean; verified: boolean; message: string }>('auth/verify-otp', { email, code }),
+  register: (payload: { name: string; email: string; password: string; role: string; address?: string }) =>
+    request<{ ok: boolean; token: string; user: any }>('auth/register', payload),
+  login: (payload: { email: string; password: string }) =>
+    request<{ ok: boolean; token: string; user: any }>('auth/login', payload),
+  demoLogin: (payload: { address: string }) =>
+    request<{ ok: boolean; token: string; user: any }>('auth/demo-login', payload),
+  session: (token?: string) =>
+    request<{ ok: boolean; user: any }>('auth/session', undefined, token),
+  logout: (token?: string) =>
+    request<{ ok: boolean }>('auth/logout', { token }, token),
 };
