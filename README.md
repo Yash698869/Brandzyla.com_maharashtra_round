@@ -14,16 +14,16 @@ Captured during a local EVM rehearsal. The vault dashboard shows the live demo s
 
 ## Run the working demo
 
-Requires Node.js 22 and npm. From this directory:
+Requires Node.js 22 and npm. Hardhat supplies five funded development wallets on a local Ethereum chain. You do not need MetaMask, Sepolia test ETH, or a faucet for this demo. From this directory:
 
 ```powershell
 npm ci
-npm run dev
+npm run demo
 ```
 
-Open [Heirloom](http://127.0.0.1:5173). Keep the terminal running. The command starts a Hardhat EVM at port 8545, deploys Heirloom, starts the encrypted relay at port 3001, and serves the UI at port 5173. Click **Load sample vaults** to create three encrypted assets with real Ethereum transactions.
+Open [Heirloom](http://127.0.0.1:5173). Keep the terminal running. The command starts Hardhat at port 8545 (chain ID 31337), deploys Heirloom, starts the encrypted relay at port 3001, and serves the UI at port 5173. Choose an actor from the demo switcher; the app signs transactions with that actor's funded Hardhat account. Click **Load sample vaults** to create three encrypted assets with real local Ethereum transactions. Open **Activity log** and select an event to show its receipt, block number, and gas used.
 
-The local chain is ephemeral. Stopping its process loses chain state. Browser keys and relay ciphertext persist, but ciphertext alone cannot restore a lost blockchain. A new deployment gets a distinct custody namespace. Do not clear browser site data during the demo.
+The local chain is ephemeral. Stopping its process loses chain state. Browser keys and relay ciphertext persist, but ciphertext alone cannot restore a lost blockchain. A new deployment gets a distinct custody namespace. Do not clear browser site data during the demo. Local transaction hashes are verifiable through the running Hardhat node; they do not have public Etherscan pages.
 
 Read the [three-minute judging walkthrough](docs/DEMO.md) and [public deployment instructions](docs/SEPOLIA.md).
 

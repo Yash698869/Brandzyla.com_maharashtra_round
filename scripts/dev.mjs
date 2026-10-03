@@ -37,6 +37,7 @@ if (!process.argv.includes('--public')) {
   }
   if (!reusable) await deploy();
   probe.destroy();
+  console.log('Hardhat demo ready: chain 31337, five funded local wallets, no test ETH required.');
 } else {
   const file = existsSync('.runtime/sepolia-deployment.json') ? '.runtime/sepolia-deployment.json' : '.runtime/deployment.json';
   if (!existsSync(file)) throw new Error('Deploy to Sepolia and import its configuration before using --public');

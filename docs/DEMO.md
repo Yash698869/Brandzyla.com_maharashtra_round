@@ -2,9 +2,7 @@
 
 ## Before judges arrive
 
-Keep `npm run dev` running. Open `http://127.0.0.1:5173` in the same browser profile used during setup. Load the sample vaults if the workspace is empty. Choose **Alex Morgan · owner**. Rehearse once, then create a fresh sample note for the live recovery: finalized vaults cannot be reset.
-
-The existing “Letters for my family” vault is released from verification. It is useful as a ready-to-open proof. A fourth vault, “Judging demo”, is already registered and protected; find it under **My vaults**. “My digital instructions” remains protected after the cancellation verification. Check in as Alex before demonstrating an early denial on an older vault.
+Run `npm ci` once, then keep `npm run demo` running. Open `http://127.0.0.1:5173` in the same browser profile throughout the demo. Hardhat starts a local chain with five funded demo wallets; no test ETH, faucet, MetaMask, or wallet import is needed. Click **Load sample vaults** if the workspace is empty, then choose **Alex Morgan · owner**. Rehearse once, then create a fresh sample note for the live recovery: finalized vaults cannot be reset. The local chain resets when its Hardhat process stops.
 
 ## Opening pitch — 20 seconds
 
@@ -19,11 +17,11 @@ The existing “Letters for my family” vault is released from verification. It
 5. **Show the cancellation window.** As Sam, try finalization immediately after the second approval. It fails until the full challenge period finishes. Click **Skip challenge** and **Finalize recovery**.
 6. **Deliver two encrypted shares.** As Maya, click **Release encrypted share**, then do the same as James. Switch to Sam and click **Decrypt inherited asset**. The exact original note appears. Say: “Decryption happened in the beneficiary’s browser. The relay still only has ciphertext.”
 7. **Prove intervention.** Open a different protected vault, skip inactivity, request as Sam, and approve as Maya. Switch to Alex and click **I’m here — cancel recovery**. The vault becomes protected again and its effective quorum returns to zero.
-8. **Show evidence.** Open **Activity log** and a transaction row. Show the confirmed receipt, block, gas used, actor, and contract address. If Sepolia is deployed, show its real Etherscan link as additional public proof.
+8. **Show evidence.** Open **Activity log** and a transaction row. Show the confirmed receipt, block, gas used, actor, and contract address. The network badge identifies Hardhat and chain 31337. Explain that this proof is on the live local chain, so its hashes do not have public Etherscan links.
 
 ## Questions worth answering directly
 
-**Why blockchain?** It provides publicly verifiable authorization, timing and events, with no platform admin who can override the contract. Asset confidentiality comes from encryption and distributed custody.
+**Why blockchain?** The contract enforces authorization, timing and events, with no platform admin who can override it. On Hardhat, judges can verify those rules and receipts against the local node. A public deployment would make them independently visible on a block explorer. Asset confidentiality comes from encryption and distributed custody.
 
 **Can an inactivity timer unlock it?** No. It only permits a request. Two configured guardians must independently attest, then the full owner challenge window must expire.
 
@@ -37,6 +35,6 @@ The existing “Letters for my family” vault is released from verification. It
 
 “We demonstrated exact asset recovery, a failed early attempt, an unavailable guardian, and owner cancellation. The contract controls authorization; cryptography protects the asset. The next phase makes independent custody and recovery resilience practical.”
 
-## If the network fails during judging
+## If the local node fails during judging
 
-Use the running local demo and clearly name it a local EVM. The interface marks stale connections and offers retry. Keep a screenshot of successful recovery and a previously confirmed receipt ready. Do not describe an undeployed public contract as deployed, and do not represent screenshots as a live transaction.
+Restart `npm run demo`, refresh the app, and load new sample vaults if the Hardhat chain reset. The interface marks stale connections and offers retry. Keep a screenshot of successful recovery and a previously confirmed receipt ready, clearly identifying it as a prior local run.
