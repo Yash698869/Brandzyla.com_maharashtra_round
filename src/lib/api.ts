@@ -63,9 +63,11 @@ export const api = {
     request<{ ok: boolean; message: string; devCode?: string; devNotice?: string }>('auth/send-otp', { email }),
   verifyOtp: (email: string, code: string) =>
     request<{ ok: boolean; verified: boolean; message: string }>('auth/verify-otp', { email, code }),
-  register: (payload: { name: string; email: string; password: string; role: string; address?: string }) =>
+  walletChallenge: (payload: { action: 'register' | 'login'; email: string; address: string }) =>
+    request<{ ok: boolean; challenge: string; message: string }>('auth/wallet-challenge', payload),
+  register: (payload: { name: string; email: string; password: string; role: string; address?: string; challenge?: string; signature?: string }) =>
     request<{ ok: boolean; token: string; user: any }>('auth/register', payload),
-  login: (payload: { email: string; password: string }) =>
+  login: (payload: { email: string; password: string; address?: string; challenge?: string; signature?: string }) =>
     request<{ ok: boolean; token: string; user: any }>('auth/login', payload),
   demoLogin: (payload: { address: string }) =>
     request<{ ok: boolean; token: string; user: any }>('auth/demo-login', payload),

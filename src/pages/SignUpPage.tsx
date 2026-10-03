@@ -47,6 +47,7 @@ export default function SignUpPage({ config, onSuccess }: SignUpPageProps) {
   const [otpCode, setOtpCode] = useState('');
   const [otpCooldown, setOtpCooldown] = useState(0);
   const [otpNotice, setOtpNotice] = useState('');
+  const [verifiedEmail, setVerifiedEmail] = useState('');
 
   // UI States
   const [busy, setBusy] = useState('');
@@ -136,8 +137,9 @@ export default function SignUpPage({ config, onSuccess }: SignUpPageProps) {
     if (busy) return;
     setError('');
 
+    const cleanEmail = email.trim().toLowerCase();
     const cleanCode = otpCode.trim();
-    if (!cleanCode || cleanCode.length < 6) {
+    if (verifiedEmail !== cleanEmail && (!cleanCode || cleanCode.length < 6)) {
       setError('Please enter the complete 6-digit verification code');
       return;
     }
@@ -148,14 +150,20 @@ export default function SignUpPage({ config, onSuccess }: SignUpPageProps) {
     }
 
     try {
-      setBusy('Verifying code & confirming email...');
-      await api.verifyOtp(email.trim().toLowerCase(), cleanCode);
+      if (verifiedEmail !== cleanEmail) {
+        setBusy('Verifying code & confirming email...');
+        await api.verifyOtp(cleanEmail, cleanCode);
+        setVerifiedEmail(cleanEmail);
+        setOtpNotice(config.mode === 'public'
+          ? 'Email verified. Confirm your wallet signature to finish creating your account.'
+          : 'Email verified. Creating your account...');
+      }
 
-      setBusy('Generating cryptographic keys & initializing custody...');
+      setBusy(config.mode === 'public' ? 'Confirming wallet ownership and creating account...' : 'Generating cryptographic keys & initializing custody...');
       const user = await registerUser(
         {
           name: name.trim(),
-          email: email.trim().toLowerCase(),
+          email: cleanEmail,
           password,
           role,
         },
@@ -172,6 +180,7 @@ export default function SignUpPage({ config, onSuccess }: SignUpPageProps) {
       const destination = query.redirect && query.redirect !== '/app' ? query.redirect : roleHome;
       navigate(destination);
     } catch (err: any) {
+      if (/verify your email address/i.test(err?.message || '')) setVerifiedEmail('');
       setError(err?.message || 'Registration failed. Please verify your code and try again.');
     } finally {
       setBusy('');
@@ -279,6 +288,7 @@ export default function SignUpPage({ config, onSuccess }: SignUpPageProps) {
                   <p>
                     Once verified, a dedicated RSA-OAEP encryption keypair will be created securely
                     inside your browser. No private keys are ever stored on our servers.
+                    {config?.mode === 'public' && ' Your connected wallet will also ask you to sign a one-time account verification message.'}
                   </p>
                 </div>
               </div>
@@ -286,7 +296,7 @@ export default function SignUpPage({ config, onSuccess }: SignUpPageProps) {
               <button
                 type="submit"
                 className="button primary full auth-submit-btn"
-                disabled={!!busy || otpCode.trim().length !== 6}
+                disabled={!!busy || (verifiedEmail !== email.trim().toLowerCase() && otpCode.trim().length !== 6)}
               >
                 {busy ? (
                   <>
@@ -347,6 +357,7 @@ export default function SignUpPage({ config, onSuccess }: SignUpPageProps) {
                     value={email}
                     onChange={e => {
                       setEmail(e.target.value);
+                      if (e.target.value.trim().toLowerCase() !== verifiedEmail) setVerifiedEmail('');
                       if (fieldErrors.email) setFieldErrors({ ...fieldErrors, email: '' });
                     }}
                     disabled={!!busy}
