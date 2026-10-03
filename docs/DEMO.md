@@ -4,6 +4,8 @@
 
 Run `npm ci` once, then keep `npm run demo` running. Open `http://127.0.0.1:5173` in the same browser profile throughout the demo. Hardhat starts a local chain with five funded demo wallets; no test ETH, faucet, MetaMask, or wallet import is needed. Click **Load sample vaults** if the workspace is empty, then choose **Alex Morgan · owner**. Rehearse once, then create a fresh sample note for the live recovery: finalized vaults cannot be reset. The local chain resets when its Hardhat process stops.
 
+In a second terminal, run `npm run demo:check` immediately before judges arrive. Keep its chain ID, deployment transaction, and wallet readiness output visible as a quick technical proof.
+
 ## Opening pitch — 20 seconds
 
 “Digital inheritance has two failure modes: your family never gets access, or access is released while you are still here. Heirloom combines client-side encryption, shared custody, and on-chain recovery authorization. Neither our platform nor a single guardian holds enough information to decrypt your asset.”

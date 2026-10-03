@@ -8,6 +8,7 @@
   },
   "scripts": {
     "demo": "node scripts/dev.mjs",
+    "demo:check": "node scripts/check-demo.mjs",
     "dev": "node scripts/dev.mjs",
     "dev:sepolia": "node scripts/dev.mjs --public",
     "sepolia:import": "node scripts/use-sepolia.mjs",
