@@ -391,6 +391,7 @@ function AppContent() {
     if (busy) return;
     setBusy(label);
     setError('');
+    setToast('');
     setLastHash('');
     try {
       await fn();
@@ -536,18 +537,17 @@ function AppContent() {
   async function action(vault: Vault, method: 'requestRecovery' | 'approveRecovery' | 'finalizeRecovery' | 'checkIn') {
     if (!vault || !actor || !config) return;
 
-    // Strict contract authorization check
-    if (method === 'checkIn' && !same(actor.address, vault.state.owner)) {
-      throw new Error(`Wallet mismatch: Connected wallet ${short(actor.address)} is not the vault owner (${short(vault.state.owner)}).`);
-    }
-    if ((method === 'requestRecovery' || method === 'finalizeRecovery') && !same(actor.address, vault.state.beneficiary)) {
-      throw new Error(`Wallet mismatch: Connected wallet ${short(actor.address)} is not the designated beneficiary (${short(vault.state.beneficiary)}).`);
-    }
-    if (method === 'approveRecovery' && !vault.state.guardians.some(g => same(g, actor.address))) {
-      throw new Error(`Wallet mismatch: Connected wallet ${short(actor.address)} is not a configured guardian.`);
-    }
-
     await run(method === 'checkIn' ? 'Confirming check-in' : 'Confirming transaction', async () => {
+      // Strict contract authorization check
+      if (method === 'checkIn' && !same(actor.address, vault.state.owner)) {
+        throw new Error(`Wallet mismatch: Connected wallet ${short(actor.address)} is not the vault owner (${short(vault.state.owner)}).`);
+      }
+      if ((method === 'requestRecovery' || method === 'finalizeRecovery') && !same(actor.address, vault.state.beneficiary)) {
+        throw new Error(`Wallet mismatch: Connected wallet ${short(actor.address)} is not the designated beneficiary (${short(vault.state.beneficiary)}).`);
+      }
+      if (method === 'approveRecovery' && !vault.state.guardians.some(g => same(g, actor.address))) {
+        throw new Error(`Wallet mismatch: Connected wallet ${short(actor.address)} is not a configured guardian.`);
+      }
       const contract = await writableContract(config, actor.address);
       const args =
         method === 'requestRecovery' || method === 'checkIn'
@@ -568,11 +568,10 @@ function AppContent() {
   async function release(vault: Vault) {
     if (!vault || !actor || !config) return;
 
-    if (!vault.state.guardians.some(g => same(g, actor.address))) {
-      throw new Error(`Wallet mismatch: Connected wallet ${short(actor.address)} is not a guardian for this vault.`);
-    }
-
     await run('Encrypting guardian release', async () => {
+      if (!vault.state.guardians.some(g => same(g, actor.address))) {
+        throw new Error(`Wallet mismatch: Connected wallet ${short(actor.address)} is not a guardian for this vault.`);
+      }
       const state = await getVault(config, vault.state.id);
       if (state.status !== 2 || !state.approved.some(g => same(g, actor.address))) {
         throw new Error('Finalize recovery and approve with this guardian before releasing its share');
@@ -598,11 +597,10 @@ function AppContent() {
   async function decrypt(vault: Vault) {
     if (!vault || !actor || !config) return;
 
-    if (!same(actor.address, vault.state.beneficiary)) {
-      throw new Error(`Wallet mismatch: Connected wallet ${short(actor.address)} is not the designated beneficiary (${short(vault.state.beneficiary)}).`);
-    }
-
     await run('Verifying & decrypting', async () => {
+      if (!same(actor.address, vault.state.beneficiary)) {
+        throw new Error(`Wallet mismatch: Connected wallet ${short(actor.address)} is not the designated beneficiary (${short(vault.state.beneficiary)}).`);
+      }
       const state = await getVault(config, vault.state.id);
       if (state.status !== 2 || !same(state.beneficiary, actor.address)) {
         throw new Error('Only the designated beneficiary can decrypt after finalization');
@@ -1027,11 +1025,21 @@ function AppContent() {
           </div>
         )}
 
-        {toast && (
+        {toast && !error && (
           <div className="toast" role="status">
             <CircleCheck size={19} />
             {toast}
             <button aria-label="Dismiss notification" onClick={() => setToast('')}>
+              <X size={14} />
+            </button>
+          </div>
+        )}
+
+        {error && !current && (
+          <div className="toast error-banner" role="alert">
+            <CircleAlert size={19} />
+            <span>{error}</span>
+            <button aria-label="Dismiss error" onClick={() => setError('')}>
               <X size={14} />
             </button>
           </div>
