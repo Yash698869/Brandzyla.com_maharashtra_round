@@ -31,6 +31,8 @@ The local chain is ephemeral. Stopping its process loses chain state. Browser ke
 
 Read the [three-minute judging walkthrough](docs/DEMO.md) and [public deployment instructions](docs/SEPOLIA.md).
 
+Separate-device custody and portable identity backup are design work, not current demo capabilities. See the [hosted relay design](docs/SEPARATE-DEVICE.md) and [identity backup design](docs/IDENTITY-BACKUP.md).
+
 ## Public blockchain proof
 
 Open [Deploy Heirloom](http://127.0.0.1:5173/deploy.html) **in the browser containing your Ethereum wallet**. Get Sepolia test ETH, connect, and sign the deployment. The page validates the compiled runtime against the receipt and provides an Etherscan transaction link. Download `heirloom-sepolia.json`, then run:
@@ -68,7 +70,7 @@ flowchart LR
   B --> D[Reconstruct key and decrypt locally]
 ```
 
-`contracts/Heirloom.sol` is the authorization state machine. `src/lib/crypto.ts` handles encryption and recovery. `server/index.mjs` stores ciphertext and verifies signed writes against contract state. `src/lib/chain.ts` checks deployment fingerprints and canonical finalization receipts. `shared/` contains the protocol domains and shared validation.
+`contracts/Heirloom.sol` is the authorization state machine. `src/lib/crypto.ts` handles encryption and recovery. `server/index.mjs` stores ciphertext, verifies signed identity enrollments and share releases, and checks package writes against contract state. `src/lib/chain.ts` checks deployment fingerprints and canonical finalization receipts. `shared/` contains the protocol domains and shared validation.
 
 ## Verification
 
@@ -83,9 +85,9 @@ The contract tests run transactions against a separate EVM on port 18545. Crypto
 
 The relay and one guardian cannot reconstruct the key from the ciphertext they hold. **Two colluding guardians can combine their shares privately and bypass the off-chain release policy.** Contract authorization does not cryptographically prevent a sufficient custody quorum from colluding. Wallet signatures attest to guardian decisions; they do not establish a person's real-world death or incapacity.
 
-The local actor switcher operates all roles on one machine and is clearly labelled as a demonstration. It does not prove independent custody. For separate-device deployment, the relay needs authenticated HTTPS hosting; this prototype binds its API to loopback. The browser UI needs localhost or HTTPS for Web Crypto.
+The local actor switcher operates all roles on one machine and is clearly labelled as a demonstration. It does not prove independent custody. The relay and UI bind to loopback, and the relay's local `Origin` allowlist is not wallet authentication. Separate-device custody needs authenticated HTTPS access, role-scoped relay reads and writes, durable ciphertext storage with tested restore, and an end-to-end multi-device test. The browser UI needs localhost or HTTPS for Web Crypto.
 
-Browser encryption keys currently cannot be exported. An encrypted recovery kit preserves the asset ciphertext and guardian envelopes, **not private identity keys**. Clearing browser storage or losing required guardian/beneficiary devices can permanently block recovery. Encrypted identity backup, key rotation, and guardian replacement remain future work.
+Browser encryption keys currently cannot be exported. An encrypted recovery kit preserves the asset ciphertext and guardian envelopes, **not private identity keys**. Clearing browser storage or losing required guardian/beneficiary devices can permanently block recovery. A future backup can cover newly generated identities, but cannot retroactively export current non-extractable keys or rekey existing vault commitments. Encrypted identity backup, key rotation, and guardian replacement remain future work.
 
 Addresses, timing, and events are public metadata. Vault labels/categories are stored only in local browser storage and are not encrypted. Each registered policy is fixed; create a new vault to change it. Finalization is irreversible; a cancellation race is decided by transaction ordering. Three confirmations reduce reorganization risk and do not eliminate it. RPC failure prevents safe release rather than bypassing authorization.
 

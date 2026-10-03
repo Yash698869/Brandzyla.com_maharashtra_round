@@ -5,19 +5,18 @@ import { Brand, VaultIllustration } from './components/Brand';
 import Modal from './components/Modal';
 import CreateVault, { type CreateInput } from './components/CreateVault';
 import { api } from './lib/api';
-import { initializeChain, signerFor, writableContract, getVault, chainTime, history, friendlyError, connectWallet, transactionDetails, verifyDeployment, verifyReleaseFinality } from './lib/chain';
-import { obtainIdentity, storedIdentity, persistPending, pendingRegistrations, clearPending } from './lib/identity';
-import { registerWithRecovery, type PendingRegistration } from './lib/registration';
+import { initializeChain, signerFor, writableContract, getVault, chainTime, history, friendlyError, connectWallet, transactionDetails, verifyDeployment, verifyReleaseFinality, watchWalletChanges } from './lib/chain';
+import { obtainIdentity, storedIdentity, walletCustodyStatus, persistPending, pendingRegistrations, clearPending } from './lib/identity';
+import { registerWithRecovery, reconcilePendingRegistration, recoveryGuidance, buildRecoveryKit, parseRecoveryKit, verifyRegisteredKit, isVaultNotFound, downloadRecoveryKit, type PendingRegistration, type RecoveryKit } from './lib/registration';
 import { sealAsset, publicKeyHash, packageCommitment, releaseShare, recoverAsset } from './lib/crypto';
 import { identityMessage, releaseMessage } from '../shared/protocol.mjs';
-import type { Config, Actor, Vault, TimelineEvent, IdentityRecord, ProtectedPackage, AssetData } from './lib/types';
+import type { Config, Actor, Vault, TimelineEvent, IdentityRecord, AssetData } from './lib/types';
 
 type Page = 'overview' | 'assets' | 'recovery' | 'guardians' | 'activity';
 const short = (address = '') => `${address.slice(0, 6)}…${address.slice(-4)}`;
 const same = (a = '', b = '') => a.toLowerCase() === b.toLowerCase();
 function duration(seconds: number) { if (seconds >= 86400) return `${Math.ceil(seconds / 86400)} days`; if (seconds >= 3600) return `${Math.ceil(seconds / 3600)} hours`; if (seconds >= 60) return `${Math.ceil(seconds / 60)} min`; return `${Math.max(0, Math.ceil(seconds))} sec`; }
 const statusLabel = (v: Vault) => v.state.status === 2 ? 'Released' : v.state.status === 1 ? 'Recovery pending' : 'Protected';
-function download(value: unknown, name: string) { const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' })); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
 const eventCopy: Record<string, string> = { VaultRegistered: 'Vault encrypted & registered', OwnerCheckedIn: 'Owner checked in', RecoveryRequested: 'Recovery requested', GuardianApproved: 'Guardian approval confirmed', ChallengeStarted: 'Cancellation window opened', RecoveryCancelled: 'Recovery cancelled by owner', RecoveryFinalized: 'Recovery finalized on-chain' };
 const pages: { id: Page; label: string; icon: typeof LayoutDashboard }[] = [{ id: 'overview', label: 'Overview', icon: LayoutDashboard }, { id: 'assets', label: 'My vaults', icon: FolderLock }, { id: 'recovery', label: 'Recovery center', icon: ShieldCheck }, { id: 'guardians', label: 'Guardians', icon: UsersRound }, { id: 'activity', label: 'Activity log', icon: Activity }];
 
@@ -27,38 +26,53 @@ export default function App() {
   const [page, setPage] = useState<Page>('overview'); const [selected, setSelected] = useState<string>(); const [creating, setCreating] = useState(false); const [help, setHelp] = useState(false);
   const [busy, setBusy] = useState(''); const [boot, setBoot] = useState('Connecting to your vault'); const [error, setError] = useState(''); const [toast, setToast] = useState('');
   const [time, setTime] = useState(0); const [block, setBlock] = useState(0); const [search, setSearch] = useState(''); const [filter, setFilter] = useState('All vaults');
-  const [releaseCount, setReleaseCount] = useState<Record<string, number>>({}); const [decrypted, setDecrypted] = useState<{ id: string; asset: AssetData }>();
+  const [releaseGuardians, setReleaseGuardians] = useState<Record<string, string[]>>({}); const [decrypted, setDecrypted] = useState<{ id: string; asset: AssetData }>();
   const [inspection, setInspection] = useState<any>(); const importRef = useRef<HTMLInputElement>(null);
-  const [offline, setOffline] = useState(false); const [pending, setPending] = useState<PendingRegistration[]>([]); const [lastHash, setLastHash] = useState('');
+  const [offline, setOffline] = useState(false); const [pending, setPending] = useState<PendingRegistration[]>([]); const [pendingMismatch, setPendingMismatch] = useState<string[]>([]); const [lastHash, setLastHash] = useState('');
   const current = vaults.find(v => v.state.id === selected);
+  const deliveredGuardians = current ? releaseGuardians[current.state.id] ?? [] : [];
+  const guidance = current ? recoveryGuidance(current.state, actor?.address, time, deliveredGuardians) : undefined;
   const namespace = config ? `${config.chainId}:${config.contractAddress}:${config.deploymentId}` : '';
   const metadataKey = (c: Config) => `heirloom-labels:${c.deploymentId}`;
   const notify = (message: string) => { setToast(message); };
+  const exportKit = (kit: RecoveryKit, filename: string) => {
+    setError(''); setLastHash('');
+    try { downloadRecoveryKit(kit, filename); notify('Recovery kit download requested. Save the file; it does not contain browser custody keys.'); }
+    catch (e) { setError(friendlyError(e)); }
+  };
   const nameOf = (address: string) => config?.actors.find(a => same(a.address, address))?.name ?? short(address);
 
   const refresh = useCallback(async (c: Config) => {
     await verifyDeployment(c);
     const ns = `${c.chainId}:${c.contractAddress}:${c.deploymentId}`;
     const preserved = await pendingRegistrations(ns);
+    const mismatches: string[] = [];
     for (const entry of preserved) {
       try {
-        const state = await getVault(c, entry.package.binding.vaultId);
-        if (state.commitment !== packageCommitment(entry.package)) continue;
-        await api.savePackage(entry.package);
-        const meta = JSON.parse(localStorage.getItem(metadataKey(c)) ?? '{}'); meta[state.id] = { label: entry.label, category: entry.category, createdAt: entry.createdAt }; localStorage.setItem(metadataKey(c), JSON.stringify(meta));
-        await clearPending(ns, state.id);
-      } catch { /* An unmined registration remains preserved for export and later reconciliation. */ }
+        const result = await reconcilePendingRegistration(entry,
+          () => getVault(c, entry.package.binding.vaultId),
+          () => api.savePackage(entry.package).then(() => {}),
+          async state => {
+            const meta = JSON.parse(localStorage.getItem(metadataKey(c)) ?? '{}');
+            meta[state.id] = { label: entry.label, category: entry.category, createdAt: entry.createdAt };
+            localStorage.setItem(metadataKey(c), JSON.stringify(meta));
+            await clearPending(ns, state.id);
+          });
+        if (result === 'mismatch') mismatches.push(entry.package.binding.vaultId);
+      } catch { /* Keep failed relay writes or chain reads for a later retry. */ }
     }
-    setPending(await pendingRegistrations(ns));
+    setPending(await pendingRegistrations(ns)); setPendingMismatch(mismatches);
     const [packages, timeline, clock] = await Promise.all([api.packages(), history(c), chainTime()]);
     const meta = JSON.parse(localStorage.getItem(metadataKey(c)) ?? '{}');
     const loaded = await Promise.all(packages.map(async p => {
       try { const state = await getVault(c, p.binding.vaultId); if (state.commitment !== packageCommitment(p)) throw new Error('Package commitment mismatch'); return { package: p, state, label: meta[state.id]?.label ?? `Protected vault ${short(state.id)}`, category: meta[state.id]?.category ?? 'Encrypted asset', createdAt: meta[state.id]?.createdAt ?? 0 } as Vault; } catch { return undefined; }
     }));
     setVaults(loaded.filter((v): v is Vault => !!v)); setEvents(timeline); setTime(clock.timestamp); setBlock(clock.blockNumber);
-    const counts: Record<string, number> = {};
-    await Promise.all(loaded.filter((v): v is Vault => !!v && v.state.status === 2).map(async v => { counts[v.state.id] = (await api.releases(v.state.id)).filter(r => r.release.requestId === v.state.requestId).length; }));
-    setReleaseCount(counts);
+    const deliveries: Record<string, string[]> = {};
+    await Promise.all(loaded.filter((v): v is Vault => !!v && v.state.status === 2).map(async v => {
+      deliveries[v.state.id] = [...new Set((await api.releases(v.state.id)).filter(r => r.release.requestId === v.state.requestId).map(r => r.release.guardian.toLowerCase()))];
+    }));
+    setReleaseGuardians(deliveries);
     setOffline(false);
   }, []);
   useEffect(() => {
@@ -84,12 +98,26 @@ export default function App() {
     })(); return () => { live = false; };
   }, [refresh]);
   useEffect(() => { if (!config || boot || (config.mode === 'public' && !actor)) return; const timer = setInterval(() => refresh(config).catch(() => setOffline(true)), 6000); return () => clearInterval(timer); }, [config, boot, actor, refresh]);
+  useEffect(() => {
+    if (config?.mode !== 'public') return;
+    return watchWalletChanges(window.ethereum, () => {
+      setActor(undefined); setDecrypted(undefined); setOffline(true); setLastHash('');
+      setError('Wallet account or network changed. Reconnect your wallet before continuing.');
+    });
+  }, [config?.mode]);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 5500); return () => clearTimeout(timer); }, [toast]);
   useEffect(() => { setDecrypted(undefined); }, [actor?.address, selected]);
 
   async function run(label: string, fn: () => Promise<void>) {
-    if (busy) return; setBusy(label); setError('');
-    try { await fn(); if (config) await refresh(config); } catch (e) { setError(friendlyError(e)); } finally { setBusy(''); }
+    if (busy) return; setBusy(label); setError(''); setLastHash('');
+    try {
+      await fn();
+      if (config) {
+        try { await refresh(config); }
+        catch { setOffline(true); setError('The action completed, but the latest chain state could not be loaded. Retry the connection.'); }
+      }
+    } catch (e) { setError(friendlyError(e)); }
+    finally { setBusy(''); }
   }
   async function create(input: CreateInput, c = config!, owner = actor!) {
     const registry = await api.identities();
@@ -105,8 +133,10 @@ export default function App() {
     const meta = JSON.parse(localStorage.getItem(metadataKey(c)) ?? '{}'); meta[id] = { label: input.label, category: input.category, createdAt: Date.now() }; localStorage.setItem(metadataKey(c), JSON.stringify(meta)); return id;
   }
   async function submitCreate(input: CreateInput) {
-    setBusy('Encrypting & registering'); setError('');
-    try { const id = await create(input); setCreating(false); await refresh(config!); setSelected(id); notify('Your asset is encrypted. Recovery policy confirmed on-chain.'); } catch (e) { throw new Error(friendlyError(e)); } finally { setBusy(''); }
+    setBusy('Encrypting & registering'); setError(''); setLastHash('');
+    try { const id = await create(input); setCreating(false); await refresh(config!); setSelected(id); notify('Your asset is encrypted. Recovery policy confirmed on-chain.'); }
+    catch (e) { setPending(await pendingRegistrations(namespace)); throw new Error(friendlyError(e)); }
+    finally { setBusy(''); }
   }
   async function samples() {
     await run('Creating sample vaults', async () => {
@@ -150,30 +180,69 @@ export default function App() {
   }
   async function enrollWallet() {
     if (!config) return; await run('Connecting wallet', async () => {
-      const address = await connectWallet(config); const a: Actor = { address, name: 'Your connected wallet', role: 'owner', initials: 'YW' }; setActor(a);
+      const address = await connectWallet(config); const a: Actor = { address, name: 'Your connected wallet', role: 'owner', initials: 'YW' };
+      setActor(a);
       const existing = await api.identities(); const enrolled = existing.find(i => same(i.address, address));
       let identity = await storedIdentity(namespace, address);
-      if (enrolled && !identity) throw new Error('This wallet already enrolled a key on another browser. Use that browser; this device cannot replace an existing custody key.');
-      identity ??= await obtainIdentity(namespace, address);
-      if (!enrolled) { const signer = await signerFor(config, address); await api.enroll({ address, publicKey: identity.publicKey, signature: await signer.signMessage(identityMessage(config, address, identity.publicKey)) }); }
-      setIdentities(await api.identities()); notify('Wallet connected and encryption identity enrolled.');
+      const custody = walletCustodyStatus(enrolled, identity);
+      if (custody === 'wallet-only' || custody === 'mismatch') {
+        setIdentities(existing);
+        setError(custody === 'wallet-only'
+          ? 'Wallet connected for on-chain actions. Its enrolled encryption key is on another browser; release and decryption require that browser.'
+          : 'Wallet connected for on-chain actions. This browser has a different encryption key. Use the originally enrolled browser for release and decryption.');
+        return;
+      }
+      if (custody === 'enroll') {
+        identity ??= await obtainIdentity(namespace, address);
+        const signer = await signerFor(config, address);
+        await api.enroll({ address, publicKey: identity.publicKey, signature: await signer.signMessage(identityMessage(config, address, identity.publicKey)) });
+      }
+      setIdentities(await api.identities()); setError(''); notify('Wallet connected and encryption identity enrolled.');
     });
   }
   async function importKit(file?: File) {
     if (!file || !config) return;
     await run('Verifying recovery kit', async () => {
       if (file.size > 15 * 1024 * 1024) throw new Error('Recovery kit is too large');
-      const kit = JSON.parse(await file.text()); if (kit.format !== 'heirloom-recovery-kit' || kit.version !== 1) throw new Error('Unsupported recovery kit');
-      const p: ProtectedPackage = kit.package;
-      if (p.binding.chainId !== config.chainId || !same(p.binding.contract, config.contractAddress)) throw new Error('This recovery kit belongs to another chain or contract');
-      const state = await getVault(config, p.binding.vaultId); if (packageCommitment(p) !== state.commitment || publicKeyHash(p.beneficiaryPublicKey) !== state.beneficiaryKeyHash) throw new Error('Recovery kit does not match its on-chain commitments');
-      await api.savePackage(p); setSelected(state.id); notify('Recovery kit verified against Ethereum and imported.');
+      let raw: unknown;
+      try { raw = JSON.parse(await file.text()); } catch { throw new Error('Recovery kit must be a valid JSON file'); }
+      const kit = parseRecoveryKit(raw, config), p = kit.package;
+      let state;
+      try { state = await getVault(config, p.binding.vaultId); }
+      catch (e) {
+        if (!isVaultNotFound(e)) throw e;
+        await persistPending(namespace, { package: p, label: kit.metadata?.label ?? 'Imported encrypted vault', category: kit.metadata?.category ?? 'Encrypted asset', createdAt: kit.metadata?.createdAt ?? Date.now(), transactionHash: kit.transactionHash });
+        setPending(await pendingRegistrations(namespace));
+        notify('Registration is not on-chain yet. The encrypted kit is saved here and will be checked again after confirmation.');
+        return;
+      }
+      if (packageCommitment(p) !== state.commitment || publicKeyHash(p.beneficiaryPublicKey) !== state.beneficiaryKeyHash) throw new Error('Recovery kit does not match its on-chain commitments');
+      await api.savePackage(p);
+      if (kit.metadata) { const meta = JSON.parse(localStorage.getItem(metadataKey(config)) ?? '{}'); meta[state.id] = kit.metadata; localStorage.setItem(metadataKey(config), JSON.stringify(meta)); }
+      setSelected(state.id); notify('Encrypted package verified against the chain and imported. Custody keys remain on their original browser.');
+    });
+  }
+  async function exportRegisteredKit(vault: Vault) {
+    if (!config) return;
+    await run('Verifying recovery kit', async () => {
+      verifyRegisteredKit(await api.kit(vault.state.id), config, vault.state);
+      const anchor = document.createElement('a');
+      anchor.href = `/api/kits/${vault.state.id}`;
+      anchor.download = `heirloom-kit-${vault.state.id.slice(2, 10)}.json`;
+      anchor.style.display = 'none'; document.body.appendChild(anchor);
+      try { anchor.click(); } finally { anchor.remove(); }
+      notify('Verified recovery kit download requested. Confirm that your browser saved the file.');
     });
   }
   const visible = vaults.filter(v => (!search || v.label.toLowerCase().includes(search.toLowerCase()) || v.category.toLowerCase().includes(search.toLowerCase())) && (filter === 'All vaults' || statusLabel(v) === filter));
   const activeRecoveries = vaults.filter(v => v.state.status === 1).length;
   const protectedCount = vaults.filter(v => v.state.status !== 2).length;
   const guardians = config?.mode === 'local' ? config.actors.filter(a => a.role === 'guardian') : identities.filter(i => !same(i.address, actor?.address)).map(i => ({ address: i.address, name: short(i.address), initials: 'GI', role: 'guardian' as const }));
+  const nextAddresses = current && guidance ? guidance.nextActor === 'beneficiary' ? [current.state.beneficiary] :
+    current.state.status === 1 ? current.state.guardians.filter(g => !current.state.approved.some(a => same(a, g))) :
+      current.state.guardians.filter(g => current.state.approved.some(a => same(a, g)) && !deliveredGuardians.some(a => same(a, g))) : [];
+  const actorRole = current && actor ? same(actor.address, current.state.owner) ? 'owner' : same(actor.address, current.state.beneficiary) ? 'beneficiary' :
+    current.state.guardians.some(g => same(g, actor.address)) ? 'guardian' : 'viewer' : 'no actor';
 
   function vaultCard(v: Vault, index: number) {
     const Icon = v.category === 'Family memories' ? Heart : v.category === 'Account access' ? KeyRound : FileText;
@@ -186,8 +255,10 @@ export default function App() {
     <aside className="sidebar"><Brand/><div className="workspace"><span className="workspace-icon"><Sprout size={18}/></span><div>Personal workspace<small>Your legacy, protected</small></div><ChevronDown size={15}/></div><span className="nav-caption">WORKSPACE</span><nav>{pages.map(p => <button key={p.id} className={page === p.id ? 'nav-item active' : 'nav-item'} onClick={() => { setPage(p.id); setSearch(''); }}><p.icon size={19}/>{p.label}{p.id === 'recovery' && activeRecoveries > 0 && <span className="nav-count">{activeRecoveries}</span>}{p.id === 'assets' && <span className="nav-total">{vaults.length}</span>}</button>)}</nav><div className="sidebar-spacer"/><div className="sidebar-note"><span className="note-spark">✳</span><h4>A legacy worth keeping.</h4><p>A little planning today.<br/>Peace of mind for tomorrow.</p><button onClick={() => setHelp(true)}>How Heirloom works <ArrowUpRight size={14}/></button></div><button className="sidebar-help" onClick={() => setHelp(true)}><CircleHelp size={18}/> Help & protocol guide<ArrowUpRight size={14}/></button><div className="sidebar-account"><span className="avatar">{actor?.initials ?? 'HL'}</span><div>{actor?.name ?? 'Your workspace'}<small>{actor?.role ?? 'Connect a wallet'}</small></div><span className="online-dot"/></div></aside>
     <div className="main-shell"><header className="topbar"><div className="breadcrumb"><span>Workspace</span><ChevronRight size={13}/><strong>{pages.find(p => p.id === page)?.label}</strong></div><div className="topbar-right"><button className="network-pill" onClick={() => setInspection({ network: config?.mode === 'local' ? 'Hardhat local Ethereum network' : 'Ethereum Sepolia', chainId: config?.chainId, rpc: config?.mode === 'local' ? config.rpcUrl : undefined, contract: config?.contractAddress, deploymentTx: config?.transactionHash, wallet: actor?.address, block })}><span className={offline ? "offline-dot" : "online-dot"}/>{offline ? "Connection stale" : config?.mode === 'public' ? 'Ethereum Sepolia' : 'Hardhat local'}<ChevronDown size={12}/></button><button className="icon-button notification" aria-label="View activity" onClick={() => setPage('activity')}><Bell size={19}/>{events.length > 0 && <i/>}</button><span className="topbar-divider"/><span className="avatar small">{actor?.initials ?? 'HL'}</span></div></header>
     <main>
-      <div className="demo-strip"><span><span className="demo-dot"/>{config?.mode === 'public' ? 'PUBLIC TESTNET' : 'HARDHAT LOCAL DEMO'}</span><p>{config?.mode === 'public' ? 'Independent wallets · encrypted custody · real Sepolia transactions' : 'Five funded local wallets · real contract transactions · no test ETH needed'}</p>{config?.mode === 'local' ? <div className="actor-switch"><span>Acting as</span><select aria-label="Demo actor" value={actor?.address ?? ''} onChange={e => { setActor(config.actors.find(a => a.address === e.target.value)); setError(''); }}>{config.actors.map(a => <option value={a.address} key={a.address}>{a.name} · {a.role}</option>)}</select><ChevronDown size={13}/></div> : <button onClick={enrollWallet} disabled={!!busy}><Wallet size={14}/>{actor ? short(actor.address) : 'Connect & enroll wallet'}</button>}</div>
-      {offline && !boot && <div className="error-banner" role="status"><Network size={17}/><span>Connection lost or changed. Displayed chain data may be stale.</span><button onClick={() => config && run("Reconnecting", () => refresh(config))}>Retry</button></div>}{pending.length > 0 && <div className="error-banner" role="status"><FolderLock size={17}/><span>{pending.length} unfinished registration(s) preserved on this browser.</span><button onClick={() => download({ format: "heirloom-recovery-kit", version: 1, package: pending[0].package }, "heirloom-pending-kit.json")}>Export kit</button></div>}{error && <div className="error-banner" role="alert"><CircleAlert size={18}/><span>{error}</span>{lastHash && <button onClick={() => run("Checking transaction", async () => setInspection(await transactionDetails(lastHash)))}>Check transaction</button>}<button aria-label="Dismiss error" onClick={() => setError('')}><X size={16}/></button></div>}
+      <div className="demo-strip"><span><span className="demo-dot"/>{config?.mode === 'public' ? 'PUBLIC TESTNET' : 'HARDHAT LOCAL DEMO'}</span><p>{config?.mode === 'public' ? 'Independent wallets · encrypted custody · real Sepolia transactions' : 'Five funded local wallets · real contract transactions · no test ETH needed'}</p>{config?.mode === 'local' ? <div className="actor-switch"><span>Acting as</span><select aria-label="Demo actor" disabled={!!busy} value={actor?.address ?? ''} onChange={e => { setActor(config.actors.find(a => a.address === e.target.value)); setError(''); setLastHash(''); }}>{config.actors.map(a => <option value={a.address} key={a.address}>{a.name} · {a.role}</option>)}</select><ChevronDown size={13}/></div> : <button onClick={enrollWallet} disabled={!!busy}><Wallet size={14}/>{actor ? short(actor.address) : 'Connect & enroll wallet'}</button>}</div>
+      {offline && !boot && <div className="error-banner" role="status"><Network size={17}/><span>Connection lost or changed. Displayed chain data may be stale.</span><button onClick={() => config ? run('Reconnecting', async () => {}) : window.location.reload()}>Retry</button></div>}
+      {pending.map(entry => <div className="error-banner pending-banner" role="status" key={entry.package.binding.vaultId}><FolderLock size={17}/><span><strong>{entry.label}</strong>{pendingMismatch.includes(entry.package.binding.vaultId) ? ' does not match its on-chain commitment. Keep the kit for investigation; this package cannot be published.' : ' has an unfinished registration. Its encrypted package is safe on this browser.'}{entry.transactionHash && <> Transaction: {short(entry.transactionHash)}.</>}</span><button onClick={() => exportKit(buildRecoveryKit(entry.package, { label: entry.label, category: entry.category, createdAt: entry.createdAt }, entry.transactionHash), `heirloom-pending-${entry.package.binding.vaultId.slice(2, 10)}.json`)}>Export kit</button></div>)}
+      {error && !current && !creating && <div className="error-banner" role="alert"><CircleAlert size={18}/><span>{error}</span>{lastHash && <button onClick={() => run('Checking transaction', async () => setInspection(await transactionDetails(lastHash)))}>Check transaction</button>}<button aria-label="Dismiss error" onClick={() => setError('')}><X size={16}/></button></div>}
       {boot ? <div className="loading-screen"><Brand small/><LoaderCircle className="spin" size={24}/><h2>{boot}</h2><p>Keys stay in your browser. Policies live on Ethereum.</p></div> : <>
       <div className="page-heading"><div><span className="eyebrow">{page === 'overview' ? 'YOUR LEGACY, IN GOOD HANDS' : 'YOUR PERSONAL WORKSPACE'}</span><h1>{page === 'overview' ? 'A little peace of mind.' : page === 'assets' ? 'What matters, kept safe.' : page === 'recovery' ? 'Recovery, with care.' : page === 'guardians' ? 'Your circle of trust.' : 'Every step, accounted for.'}</h1><p>{page === 'overview' ? 'Protect what matters. Pass it on to the people who matter.' : page === 'assets' ? 'Your encrypted assets and the people you’re keeping them for.' : page === 'recovery' ? 'Independent approval. Time to intervene. A verifiable path to recovery.' : page === 'guardians' ? 'No one holds all the keys. That’s the point.' : 'An auditable history, written directly to Ethereum.'}</p></div><button className="button primary" onClick={() => setCreating(true)} disabled={!actor || !!busy}><Plus size={17}/>Create a vault</button></div>
       {page === 'overview' && <>
@@ -197,8 +268,8 @@ export default function App() {
         {vaults.length > 0 ? <div className="vault-grid">{vaults.slice(0, 3).map(vaultCard)}</div> : <div className="empty-vault"><span className="empty-art"><FolderLock size={30}/></span><div><h3>Your legacy starts here.</h3><p>Create your first vault, or explore with encrypted sample assets.</p></div>{config?.mode === 'local' && <button className="button secondary" disabled={!!busy} onClick={samples}><Play size={15}/>{busy || 'Load sample vaults'}</button>}</div>}
         <div className="dashboard-bottom"><section className="recent-panel"><div className="section-heading"><h2>Recent activity</h2><button className="text-button" onClick={() => setPage('activity')}>View all<ArrowRight size={14}/></button></div>{events.length ? eventRows(events.slice(0, 3)) : <div className="calm-empty"><Activity size={23}/><p>Your story will appear here.<small>Every vault and recovery action gets a real transaction.</small></p></div>}</section><section className="checkin-panel"><span className="checkin-icon"><Fingerprint size={28}/></span><span className="eyebrow">STAY IN CONTROL</span><h3>A check-in goes a long way.</h3><p>Let your guardians know you’re here. Reset your recovery clock with a signed transaction.</p><button className="button secondary" disabled={!actor || !!busy || !vaults.some(v => same(v.state.owner, actor.address) && v.state.status !== 2)} onClick={() => { const v = vaults.find(v => same(v.state.owner, actor?.address) && v.state.status !== 2); if (v) setSelected(v.state.id); }}>Manage check-ins<ArrowRight size={15}/></button></section></div>
       </>}
-      {(page === 'assets' || page === 'recovery') && <><div className="asset-toolbar"><div className="search-field"><Search size={17}/><input placeholder="Search your vaults…" value={search} onChange={e => setSearch(e.target.value)}/></div><select aria-label="Filter vault status" value={filter} onChange={e => setFilter(e.target.value)}>{['All vaults', 'Protected', 'Recovery pending', 'Released'].map(f => <option key={f}>{f}</option>)}</select><button className="button secondary small-button" onClick={() => importRef.current?.click()}><Upload size={15}/>Import kit</button></div>{page === 'recovery' && <div className="recovery-explainer"><ShieldCheck size={26}/><div><strong>A deliberate path to recovery.</strong><p>Missed check-in → two guardian attestations → owner cancellation window → beneficiary release.</p></div></div>}<div className="vault-grid">{visible.map(vaultCard)}</div>{!visible.length && <div className="large-empty"><FolderLock size={35}/><h3>{search ? 'No matching vaults.' : 'Your vaults will appear here.'}</h3><p>{search ? 'Try another name or category.' : 'Create a vault or load sample assets to explore the full recovery flow.'}</p>{config?.mode === 'local' && !search && <button className="button secondary" disabled={!!busy} onClick={samples}><Play size={16}/>Load sample vaults</button>}</div>}</>}
-      {page === 'guardians' && <><div className="guardian-intro"><span><UsersRound size={24}/></span><div><h3>Shared responsibility. Individual control.</h3><p>Each guardian holds one encrypted key share. Any two can help your beneficiary recover; one can’t act alone.</p></div><span className="threshold-pill">2 / 3 quorum</span></div><div className="guardians-grid">{guardians?.map((g, i) => <div className="guardian-card" key={g.address}><div className={`guardian-avatar ga-${i % 3}`}>{g.initials}</div><h3>{g.name}</h3><span className="guardian-role">Independent guardian</span><span className="wallet-address">{short(g.address)}</span><div className="guardian-status"><span className="online-dot"/>{identities.some(identity => same(identity.address, g.address)) ? 'Encryption identity enrolled' : 'Identity not enrolled'}</div><div className="guardian-card-footer"><KeyRound size={15}/><span>Holds 1 encrypted share per vault</span></div>{config?.mode === 'local' && <button className="button secondary" onClick={() => { setActor(g); setPage('recovery'); }}>View guardian inbox<ArrowRight size={14}/></button>}</div>)}</div><div className="trust-note"><CircleHelp size={19}/><p>Guardians must verify incapacity independently before approving. Two colluding guardians can combine their shares privately; independent selection and custody remain essential.</p></div></>}
+      {(page === 'assets' || page === 'recovery') && <><div className="asset-toolbar"><div className="search-field"><Search size={17}/><input placeholder="Search your vaults…" value={search} onChange={e => setSearch(e.target.value)}/></div><select aria-label="Filter vault status" value={filter} onChange={e => setFilter(e.target.value)}>{['All vaults', 'Protected', 'Recovery pending', 'Released'].map(f => <option key={f}>{f}</option>)}</select><button className="button secondary small-button" disabled={!!busy || offline} onClick={() => importRef.current?.click()}><Upload size={15}/>Import kit</button></div>{page === 'recovery' && <div className="recovery-explainer"><ShieldCheck size={26}/><div><strong>A deliberate path to recovery.</strong><p>Missed check-in → two guardian attestations → owner cancellation window → beneficiary release.</p></div></div>}<div className="vault-grid">{visible.map(vaultCard)}</div>{!visible.length && <div className="large-empty"><FolderLock size={35}/><h3>{search ? 'No matching vaults.' : 'Your vaults will appear here.'}</h3><p>{search ? 'Try another name or category.' : 'Create a vault or load sample assets to explore the full recovery flow.'}</p>{config?.mode === 'local' && !search && <button className="button secondary" disabled={!!busy} onClick={samples}><Play size={16}/>Load sample vaults</button>}</div>}</>}
+      {page === 'guardians' && <><div className="guardian-intro"><span><UsersRound size={24}/></span><div><h3>Shared responsibility. Individual control.</h3><p>Each guardian holds one encrypted key share. Any two can help your beneficiary recover; one can’t act alone.</p></div><span className="threshold-pill">2 / 3 quorum</span></div><div className="guardians-grid">{guardians?.map((g, i) => <div className="guardian-card" key={g.address}><div className={`guardian-avatar ga-${i % 3}`}>{g.initials}</div><h3>{g.name}</h3><span className="guardian-role">Independent guardian</span><span className="wallet-address">{short(g.address)}</span><div className="guardian-status"><span className="online-dot"/>{identities.some(identity => same(identity.address, g.address)) ? 'Encryption identity enrolled' : 'Identity not enrolled'}</div><div className="guardian-card-footer"><KeyRound size={15}/><span>Holds 1 encrypted share per vault</span></div>{config?.mode === 'local' && <button className="button secondary" disabled={!!busy} onClick={() => { setActor(g); setError(''); setLastHash(''); setPage('recovery'); }}>View guardian inbox<ArrowRight size={14}/></button>}</div>)}</div><div className="trust-note"><CircleHelp size={19}/><p>Guardians must verify incapacity independently before approving. Two colluding guardians can combine their shares privately; independent selection and custody remain essential.</p></div></>}
       {page === 'activity' && <section className="all-activity"><div className="section-heading"><h2>On-chain history <span>{events.length}</span></h2><button className="text-button" disabled={!!busy} onClick={() => run('Refreshing', async () => {})}><RefreshCw size={14}/>Refresh</button></div>{events.length ? eventRows(events) : <div className="large-empty"><Activity size={32}/><h3>A clean slate.</h3><p>Create a vault to record your first transaction.</p></div>}<div className="chain-footer"><Network size={14}/>Chain {config?.chainId} · Block #{block} · {short(config?.contractAddress)}<span>Click any event to inspect its transaction</span></div></section>}
       <footer className="page-footer"><span><Sprout size={14}/>Made for the things that outlast us.</span><button onClick={() => setHelp(true)}>Heirloom protocol <ArrowUpRight size={12}/></button></footer>
       </>}
@@ -211,13 +282,14 @@ export default function App() {
       <div className="detail-guardians"><h4><UsersRound size={16}/>Guardian approvals</h4>{current.state.guardians.map((g, i) => <div key={g}><span className={`mini-avatar ga-${i}`}>{nameOf(g)[0]}</span><strong>{nameOf(g)}</strong><small>{short(g)}</small><span className={current.state.approved.some(a => same(a, g)) ? 'approved-check' : 'approval-wait'}>{current.state.approved.some(a => same(a, g)) ? <><Check size={13}/>Approved</> : <><Clock3 size={12}/>Waiting</>}</span></div>)}</div>
       <div className="ciphertext-section"><h4><LockKeyhole size={15}/>What storage can see</h4><code>{current.package.ciphertext.slice(0, 190)}…</code><p>Encrypted bytes only. No asset key or plaintext shares.</p></div>
       {decrypted?.id === current.state.id && <div className="decrypted-section"><div><CircleCheck size={18}/><strong>Recovered: {decrypted.asset.name}</strong></div>{decrypted.asset.mime.startsWith('text/') ? <pre>{new TextDecoder().decode(decrypted.asset.bytes)}</pre> : <p>File recovered successfully ({decrypted.asset.bytes.length.toLocaleString()} bytes).</p>}<button className="button secondary" onClick={() => { const a = document.createElement('a'); const url = URL.createObjectURL(new Blob([decrypted.asset.bytes], { type: decrypted.asset.mime })); a.href = url; a.download = decrypted.asset.name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }}><Download size={15}/>Download inherited asset</button></div>}
-      <button className="text-button kit-button" onClick={() => download({ format: 'heirloom-recovery-kit', version: 1, package: current.package }, `heirloom-kit-${current.state.id.slice(2, 10)}.json`)}><Download size={15}/>Export encrypted recovery kit</button>
-      </div><div className="recovery-panel"><span className="eyebrow">RECOVERY SAFEGUARDS</span><h3>Every condition matters.</h3><div className="recovery-steps">{[{ label: 'Missed owner check-in', detail: time >= current.state.lastCheckIn + current.state.inactivity ? 'Inactivity period has elapsed' : `${duration(current.state.lastCheckIn + current.state.inactivity - time)} until eligible`, done: time >= current.state.lastCheckIn + current.state.inactivity }, { label: 'Independent guardian quorum', detail: `${current.state.approvalCount} of 2 required approvals`, done: current.state.approvalCount >= 2 }, { label: 'Owner cancellation window', detail: current.state.quorumAt ? `${duration(Math.max(0, current.state.quorumAt + current.state.challenge - time))} remaining` : 'Starts after second approval', done: !!current.state.quorumAt && time >= current.state.quorumAt + current.state.challenge }, { label: 'Beneficiary authorization', detail: current.state.status === 2 ? `${releaseCount[current.state.id] ?? 0} encrypted shares delivered` : 'Owner can intervene until finalization', done: current.state.status === 2 }].map((step, i) => <div className={`recovery-step ${step.done ? 'done' : ''}`} key={step.label}><span>{step.done ? <Check size={13}/> : i + 1}</span><div><strong>{step.label}</strong><small>{step.detail}</small></div></div>)}</div>
-      <div className="acting-label">{config.mode === "local" && <select className="detail-actor-select" aria-label="Vault demo actor" value={actor?.address ?? ""} onChange={e => { setActor(config.actors.find(a => a.address === e.target.value)); setError(""); }}>{config.actors.map(a => <option key={a.address} value={a.address}>{a.name} · {a.role}</option>)}</select>}Acting as <strong>{actor?.name ?? 'No wallet connected'}</strong></div>
-      {actor && same(actor.address, current.state.owner) && current.state.status !== 2 && <><button className="button primary full" disabled={!!busy} onClick={() => action('checkIn')}><Fingerprint size={17}/>{current.state.status === 1 ? 'I’m here — cancel recovery' : 'Check in now'}</button><p className="action-hint">Signed by the owner. Resets inactivity and cancels any pending request.</p></>}
-      {actor && same(actor.address, current.state.beneficiary) && <>{current.state.status === 0 && <button className="button primary full" disabled={!!busy} onClick={() => action('requestRecovery')}><ShieldCheck size={17}/>Request recovery</button>}{current.state.status === 1 && <button className="button primary full" disabled={!!busy} onClick={() => action('finalizeRecovery')}><KeyRound size={17}/>Finalize recovery</button>}{current.state.status === 2 && <button className="button primary full" disabled={!!busy} onClick={decrypt}><LockKeyhole size={17}/>Decrypt inherited asset</button>}<p className="action-hint">The contract checks all conditions. Early attempts are rejected.</p></>}
-      {actor && current.state.guardians.some(g => same(g, actor.address)) && <>{current.state.status === 1 && <><div className="attestation-note">Approve only after independently verifying the owner’s unavailability. Your signature attests to that verification.</div><button className="button primary full" disabled={!!busy || current.state.approved.some(g => same(g, actor.address))} onClick={() => action('approveRecovery')}><ShieldCheck size={17}/>{current.state.approved.some(g => same(g, actor.address)) ? 'Approval confirmed' : 'Attest & approve recovery'}</button></>}{current.state.status === 2 && <button className="button primary full" disabled={!!busy || !current.state.approved.some(g => same(g, actor.address))} onClick={release}><KeyRound size={17}/>Release encrypted share</button>}{current.state.status === 0 && <p className="action-hint">The vault is protected. The beneficiary must open an eligible request before guardians can approve.</p>}</>}
-      {config.mode === 'local' && <div className="demo-controls"><span><Clock3 size={13}/>LOCAL DEMO CLOCK</span><p>Fast-forward the chain to demonstrate waiting periods.</p><div><button disabled={!!busy} onClick={() => run('Advancing chain clock', async () => { await api.clock(Math.max(1, current.state.lastCheckIn + current.state.inactivity - time + 1)); })}>Skip inactivity<ChevronRight size={13}/></button><button disabled={!!busy || !current.state.quorumAt} onClick={() => run('Advancing chain clock', async () => { await api.clock(Math.max(1, current.state.quorumAt + current.state.challenge - time + 1)); })}>Skip challenge<ChevronRight size={13}/></button></div></div>}
+      <button className="text-button kit-button" disabled={!!busy || offline} onClick={() => exportRegisteredKit(current)}><Download size={15}/>Export encrypted recovery kit</button><p className="kit-note">The kit contains encrypted asset data. Its label and browser custody keys stay on this device.</p>
+      </div><div className="recovery-panel"><span className="eyebrow">RECOVERY SAFEGUARDS</span><h3>Every condition matters.</h3><div className="recovery-steps">{[{ label: 'Missed owner check-in', detail: time >= current.state.lastCheckIn + current.state.inactivity ? 'Inactivity period has elapsed' : `${duration(current.state.lastCheckIn + current.state.inactivity - time)} until eligible`, done: time >= current.state.lastCheckIn + current.state.inactivity }, { label: 'Independent guardian quorum', detail: `${current.state.approvalCount} of 2 required approvals`, done: current.state.approvalCount >= 2 }, { label: 'Owner cancellation window', detail: current.state.quorumAt ? `${duration(Math.max(0, current.state.quorumAt + current.state.challenge - time))} remaining` : 'Starts after second approval', done: !!current.state.quorumAt && time >= current.state.quorumAt + current.state.challenge }, { label: 'Encrypted share delivery', detail: current.state.status === 2 ? `${deliveredGuardians.length} of 2 shares delivered` : 'Starts after finalization', done: deliveredGuardians.length >= 2 }].map((step, i) => <div className={`recovery-step ${step.done ? 'done' : ''}`} key={step.label}><span>{step.done ? <Check size={13}/> : i + 1}</span><div><strong>{step.label}</strong><small>{step.detail}</small></div></div>)}</div>
+      {guidance && <div className="recovery-next" role="status"><span>Next recovery step</span><strong>{guidance.nextAction}</strong><small>{nextAddresses.map(nameOf).join(', ')} · {guidance.nextActor}{guidance.waitSeconds ? ` · ${duration(guidance.waitSeconds)} remaining` : guidance.approvalsNeeded ? ` · ${guidance.approvalsNeeded} more approval${guidance.approvalsNeeded === 1 ? '' : 's'}` : guidance.sharesNeeded ? ` · ${guidance.sharesNeeded} more share${guidance.sharesNeeded === 1 ? '' : 's'}` : ''}</small></div>}
+      <div className="acting-label">{config.mode === 'local' && <select className="detail-actor-select" aria-label="Vault demo actor" disabled={!!busy} value={actor?.address ?? ''} onChange={e => { setActor(config.actors.find(a => a.address === e.target.value)); setError(''); setLastHash(''); }}>{config.actors.map(a => <option key={a.address} value={a.address}>{a.name} · {a.role}</option>)}</select>}Acting as <strong>{actor?.name ?? 'No wallet connected'}</strong> <span>({actorRole})</span><p>{guidance?.actorMessage}</p></div>
+      {actorRole === 'owner' && current.state.status !== 2 && <><button className="button primary full" disabled={!!busy || offline} onClick={() => action('checkIn')}><Fingerprint size={17}/>{current.state.status === 1 ? 'I’m here — cancel recovery' : 'Check in now'}</button><p className="action-hint">Signed by the owner. Resets inactivity and cancels any pending request.</p></>}
+      {actorRole === 'beneficiary' && <>{current.state.status === 0 && <button className="button primary full" disabled={!!busy || offline || guidance?.action !== 'requestRecovery'} onClick={() => action('requestRecovery')}><ShieldCheck size={17}/>Request recovery</button>}{current.state.status === 1 && <button className="button primary full" disabled={!!busy || offline || guidance?.action !== 'finalizeRecovery'} onClick={() => action('finalizeRecovery')}><KeyRound size={17}/>Finalize recovery</button>}{current.state.status === 2 && <button className="button primary full" disabled={!!busy || offline || guidance?.action !== 'decrypt'} onClick={decrypt}><LockKeyhole size={17}/>Decrypt inherited asset</button>}<p className="action-hint">{guidance?.waitSeconds ? `${duration(guidance.waitSeconds)} remain on the chain clock.` : guidance?.approvalsNeeded ? `${guidance.approvalsNeeded} more guardian approval${guidance.approvalsNeeded === 1 ? '' : 's'} needed.` : guidance?.sharesNeeded ? `${guidance.sharesNeeded} more encrypted share${guidance.sharesNeeded === 1 ? '' : 's'} needed.` : 'The contract verifies the current recovery conditions.'}</p></>}
+      {actorRole === 'guardian' && <>{current.state.status === 1 && <><div className="attestation-note">Approve only after independently verifying the owner’s unavailability. Your signature attests to that verification.</div><button className="button primary full" disabled={!!busy || offline || guidance?.action !== 'approveRecovery'} onClick={() => action('approveRecovery')}><ShieldCheck size={17}/>{current.state.approved.some(g => same(g, actor?.address)) ? 'Approval confirmed' : 'Attest & approve recovery'}</button></>}{current.state.status === 2 && <button className="button primary full" disabled={!!busy || offline || guidance?.action !== 'release'} onClick={release}><KeyRound size={17}/>{deliveredGuardians.some(g => same(g, actor?.address)) ? 'Share delivered' : 'Release encrypted share'}</button>}{current.state.status === 0 && <p className="action-hint">The vault is protected. The beneficiary must open an eligible request before guardians can approve.</p>}</>}
+      {config.mode === 'local' && <div className="demo-controls"><span><Clock3 size={13}/>LOCAL DEMO CLOCK</span><p>Fast-forward the chain to demonstrate waiting periods.</p><div><button disabled={!!busy || offline || current.state.status !== 0 || time >= current.state.lastCheckIn + current.state.inactivity} onClick={() => run('Advancing chain clock', async () => { await api.clock(Math.max(1, current.state.lastCheckIn + current.state.inactivity - time + 1)); })}>Skip inactivity<ChevronRight size={13}/></button><button disabled={!!busy || offline || current.state.status !== 1 || !current.state.quorumAt || time >= current.state.quorumAt + current.state.challenge} onClick={() => run('Advancing chain clock', async () => { await api.clock(Math.max(1, current.state.quorumAt + current.state.challenge - time + 1)); })}>Skip challenge<ChevronRight size={13}/></button></div></div>}
       <span className="detail-request">Request #{current.state.requestId} · Block #{block}</span>
       </div></div></Modal>}
     {help && <Modal title="A legacy with a safety net." eyebrow="THE HEIRLOOM PROTOCOL" onClose={() => setHelp(false)}><div className="help-content"><p>Heirloom protects a digital asset with encryption, independent guardians, and an on-chain recovery policy.</p>{[{ icon: LockKeyhole, title: 'Protect it on your device.', text: 'A fresh AES-256 key encrypts each asset. Its key is split into three shares, each encrypted for one guardian.' }, { icon: UsersRound, title: 'Share the responsibility.', text: 'Recovery requires a missed check-in and two guardian attestations. One guardian or the storage relay cannot reconstruct the key.' }, { icon: Clock3, title: 'Leave room to intervene.', text: 'The second approval opens a cancellation window. An owner check-in stops the attempt until the beneficiary finalizes.' }, { icon: KeyRound, title: 'Pass it on, privately.', text: 'After authorization, two guardians send recipient-encrypted shares. The beneficiary decrypts the inherited asset on their device.' }].map((item, i) => <div className="help-step" key={item.title}><span><item.icon size={20}/></span><div><small>0{i + 1}</small><h3>{item.title}</h3><p>{item.text}</p></div></div>)}<div className="trust-note"><CircleAlert size={17}/><p>Hackathon prototype. Two colluding guardians can bypass off-chain policy. Browser custody keys must be preserved; clearing browser storage loses that identity. The local chain is ephemeral. Use sample assets for the demo.</p></div><button className="button primary full" onClick={() => { setHelp(false); setPage('recovery'); }}>Explore recovery<ArrowRight size={16}/></button></div></Modal>}

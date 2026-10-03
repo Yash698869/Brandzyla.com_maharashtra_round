@@ -1,5 +1,5 @@
-import { createIdentity } from './crypto';
-import type { Identity } from './types';
+import { createIdentity, packageCommitment, publicKeyHash } from './crypto';
+import type { Identity, IdentityRecord } from './types';
 import type { PendingRegistration } from './registration';
 
 let dbPromise: Promise<IDBDatabase>;
@@ -16,6 +16,11 @@ export async function storedIdentity(namespace: string, address: string): Promis
     const request = db.transaction("identities", "readonly").objectStore("identities").get(`${namespace}:${address.toLowerCase()}`);
     request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
   });
+}
+export function walletCustodyStatus(enrolled: IdentityRecord | undefined, local: Identity | undefined): 'enroll' | 'ready' | 'wallet-only' | 'mismatch' {
+  if (!enrolled) return 'enroll';
+  if (!local) return 'wallet-only';
+  return publicKeyHash(enrolled.publicKey) === publicKeyHash(local.publicKey) ? 'ready' : 'mismatch';
 }
 export async function obtainIdentity(namespace: string, address: string): Promise<Identity> {
   const previous = await storedIdentity(namespace, address); if (previous) return previous;
@@ -44,8 +49,19 @@ function pendingDatabase() {
 }
 export async function persistPending(namespace: string, entry: PendingRegistration) {
   const db = await pendingDatabase(); await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction('pending', 'readwrite'); tx.objectStore('pending').put({ ...entry, namespace }, `${namespace}:${entry.package.binding.vaultId}`);
-    tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error);
+    const tx = db.transaction('pending', 'readwrite');
+    const store = tx.objectStore('pending'), key = `${namespace}:${entry.package.binding.vaultId}`;
+    let conflict: Error | undefined;
+    const request = store.get(key);
+    request.onsuccess = () => {
+      const previous = request.result as (PendingRegistration & { namespace: string }) | undefined;
+      if (previous && packageCommitment(previous.package) !== packageCommitment(entry.package)) {
+        conflict = new Error('A different encrypted package is already preserved for this vault');
+        tx.abort(); return;
+      }
+      store.put({ ...entry, transactionHash: entry.transactionHash ?? previous?.transactionHash, namespace }, key);
+    };
+    tx.oncomplete = () => resolve(); tx.onerror = () => reject(conflict ?? tx.error); tx.onabort = () => reject(conflict ?? tx.error);
   });
 }
 export async function pendingRegistrations(namespace: string): Promise<PendingRegistration[]> {

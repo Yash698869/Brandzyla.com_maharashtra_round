@@ -20,7 +20,7 @@ For a one-laptop rehearsal, use five testnet accounts in the wallet and reconnec
 
 For a public live demo, choose **2 minutes · testnet rehearsal** for the missed check-in period and **1 minute · testnet rehearsal** for cancellation. These are real block-time waits enforced by the same contract. Defaults remain seven days / 24 hours. Public mode has no time skip. Wait for three confirmations after finalization before releasing shares.
 
-The local relay currently binds to loopback. Teammates on separate devices cannot use it until authenticated HTTPS hosting is added. Do not claim independent-device validation from a single-browser demonstration.
+The local relay currently binds to loopback. Teammates on separate devices cannot use it until authenticated HTTPS hosting and durable ciphertext storage are implemented and tested. The [separate-device design](SEPARATE-DEVICE.md) lists the required authorization and recovery checks. Do not claim independent-device validation from a single-browser demonstration.
 
 ## Optional CLI path
 
