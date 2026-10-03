@@ -4,6 +4,8 @@
 
 Heirloom is a hackathon prototype for digital inheritance. An actual Solidity contract authorizes recovery after a missed owner check-in, two independent guardian attestations, and a full owner cancellation window. The encrypted asset key is split into three shares; two guardians can deliver shares encrypted for the beneficiary, who decrypts locally.
 
+[First-round judging slides](deliverables/Heirloom_First_Round.pptx) · [Three-minute live walkthrough](docs/DEMO.md)
+
 ## A look inside
 
 Captured during a local EVM rehearsal. The vault dashboard shows the live demo state; in the second capture, the beneficiary decrypted the exact original letter after two guardians released encrypted shares.
