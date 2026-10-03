@@ -19,7 +19,7 @@ if (!process.argv.includes('--public')) {
   try { running = (await probe.send('eth_chainId', [])) === '0x7a69'; } catch {}
   if (!running) {
     run(['node_modules/hardhat/dist/src/cli.js', 'node', '--hostname', '127.0.0.1', '--port', '8545'], 'chain.log');
-    for (let n = 0; n < 120; n++) {
+    for (let n = 0; n < 240; n++) {
       try { await probe.send('eth_chainId', []); running = true; break; } catch { await new Promise(r => setTimeout(r, 150)); }
     }
     if (!running) throw new Error('Local chain failed to start. See .runtime/chain.log');
