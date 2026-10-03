@@ -259,7 +259,7 @@ function AppContent() {
         initializeChain(c);
 
         // Check & validate session with server
-        const sessionUser = await restoreSession();
+        const sessionUser = await restoreSession(c);
         if (!live) return;
         if (sessionUser) {
           setCurrentUserState(sessionUser);
