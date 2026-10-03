@@ -21,7 +21,7 @@
     "preview": "vite preview --host 127.0.0.1",
     "test": "npm run test:contract && npm run test:crypto && npm run test:relay",
     "test:contract": "node --test tests/contract.test.mjs",
-    "test:crypto": "vitest run src/lib/crypto.test.ts src/lib/registration.test.ts src/lib/identity.test.ts src/lib/identity-backup.test.ts src/lib/custody-flow.test.ts src/lib/recovery.test.ts src/lib/api.test.ts src/lib/wallet-events.test.ts",
+    "test:crypto": "vitest run src/lib/crypto.test.ts src/lib/registration.test.ts src/lib/identity.test.ts src/lib/identity-backup.test.ts src/lib/custody-flow.test.ts src/lib/recovery.test.ts src/lib/api.test.ts src/lib/wallet-events.test.ts src/lib/auth.test.ts",
     "test:auth": "node --test tests/auth.test.mjs",
     "test:relay": "node --test tests/relay.test.mjs tests/relay-api.test.mjs tests/chain-safety.test.mjs tests/sepolia-deployment.test.mjs tests/auth.test.mjs"
   },

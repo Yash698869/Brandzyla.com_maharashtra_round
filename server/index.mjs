@@ -27,6 +27,17 @@ const storage = await initStorage({
 
 const same = (a, b) => typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase();
 const route = fn => async (req, res, next) => { try { await fn(req, res); } catch (e) { next(e); } };
+const walletChallenges = new Map();
+const walletAddress = address => typeof address === 'string' && /^0x[0-9a-fA-F]{40}$/.test(address);
+function verifyWalletProof({ action, email, address, challenge, signature }) {
+  if (!walletAddress(address) || !challenge || !signature) throw new Error('Connected wallet signature is required');
+  const record = walletChallenges.get(challenge);
+  if (!record || record.expiresAt < Date.now() || record.action !== action || record.email !== email || !same(record.address, address)) {
+    throw new Error('Wallet challenge is invalid or expired. Reconnect and try again.');
+  }
+  validSignature(record.message, signature, address);
+  walletChallenges.delete(challenge);
+}
 function deployment(p) { if (p.binding.chainId !== config.chainId || !same(p.binding.contract, config.contractAddress)) throw new Error('Wrong chain or contract'); }
 function validSignature(message, signature, address) { if (!same(verifyMessage(message, signature), address)) throw new Error('Invalid wallet signature'); }
 async function vaultState(id) {
@@ -386,8 +397,29 @@ async function allocateAddress(preferredAddress) {
   }
 }
 
+app.post('/api/auth/wallet-challenge', route(async (req, res) => {
+  if (config.mode !== 'public') throw new Error('Wallet challenges are available on public deployments only');
+  const { action, email, address } = req.body || {};
+  const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+  if (!['register', 'login'].includes(action) || !cleanEmail || !walletAddress(address)) {
+    throw new Error('Valid wallet challenge details are required');
+  }
+  for (const [key, record] of walletChallenges) if (record.expiresAt < Date.now()) walletChallenges.delete(key);
+  const challenge = randomBytes(32).toString('hex');
+  const message = `Heirloom ${action} wallet verification\n${JSON.stringify({
+    chainId: config.chainId,
+    contract: config.contractAddress.toLowerCase(),
+    deploymentId: config.deploymentId,
+    email: cleanEmail,
+    address: address.toLowerCase(),
+    challenge
+  })}`;
+  walletChallenges.set(challenge, { action, email: cleanEmail, address: address.toLowerCase(), message, expiresAt: Date.now() + 5 * 60 * 1000 });
+  res.json({ ok: true, challenge, message });
+}));
+
 app.post('/api/auth/register', route(async (req, res) => {
-  const { name, email, password, role, address } = req.body || {};
+  const { name, email, password, role, address, challenge, signature } = req.body || {};
   const cleanEmail = email?.trim()?.toLowerCase();
   const cleanName = name?.trim();
   const cleanRole = ['owner', 'beneficiary', 'guardian'].includes(role) ? role : 'owner';
@@ -395,6 +427,9 @@ app.post('/api/auth/register', route(async (req, res) => {
   if (!cleanName) throw new Error('Full name is required');
   if (!cleanEmail || !cleanEmail.includes('@')) throw new Error('Valid email address is required');
   if (!password || password.length < 6) throw new Error('Password must be at least 6 characters');
+  if (config.mode === 'public' && (!walletAddress(address) || !challenge || !signature)) {
+    throw new Error('Connected wallet signature is required to register');
+  }
 
   // Verify email was verified via OTP
   const isVerified = verifiedEmails.has(cleanEmail) && Date.now() < verifiedEmails.get(cleanEmail);
@@ -407,7 +442,11 @@ app.post('/api/auth/register', route(async (req, res) => {
     throw new Error('An account with this email address already exists. Please log in.');
   }
 
-  const assignedAddress = await allocateAddress(address);
+  if (config.mode === 'public') {
+    if (await storage.getUserByAddress(address)) throw new Error('This wallet is already linked to an account. Please log in.');
+    verifyWalletProof({ action: 'register', email: cleanEmail, address, challenge, signature });
+  }
+  const assignedAddress = config.mode === 'public' ? address.toLowerCase() : await allocateAddress(address);
   const salt = randomBytes(16).toString('hex');
   const passwordHash = hashPassword(password, salt);
   const initials = cleanName.split(/\s+/).map(p => p[0]).filter(Boolean).slice(0, 2).join('').toUpperCase() || 'HL';
@@ -461,7 +500,7 @@ app.post('/api/auth/register', route(async (req, res) => {
 }));
 
 app.post('/api/auth/login', route(async (req, res) => {
-  const { email, password } = req.body || {};
+  const { email, password, address, challenge, signature } = req.body || {};
   const cleanEmail = email?.trim()?.toLowerCase();
   if (!cleanEmail || typeof password !== 'string' || !password) {
     throw new Error('Email and password are required');
@@ -483,6 +522,10 @@ app.post('/api/auth/login', route(async (req, res) => {
 
   if (computedHash !== user.passwordHash) {
     throw new Error('Invalid email or password');
+  }
+  if (config.mode === 'public') {
+    if (!walletAddress(address) || !same(address, user.address)) throw new Error('Connect the wallet linked to this account');
+    verifyWalletProof({ action: 'login', email: cleanEmail, address, challenge, signature });
   }
 
   const token = randomBytes(32).toString('hex');

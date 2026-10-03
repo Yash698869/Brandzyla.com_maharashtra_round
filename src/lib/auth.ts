@@ -1,4 +1,4 @@
-import { signerFor } from './chain';
+import { connectWallet, signerFor } from './chain';
 import { obtainIdentity } from './identity';
 import { api, setApiAuthToken } from './api';
 import { identityMessage } from '../../shared/protocol.mjs';
@@ -120,10 +120,33 @@ export function formatActorName(name?: string): string {
     .join(' ');
 }
 
+async function walletProof(config: Config, action: 'register' | 'login', email: string) {
+  const address = await connectWallet(config);
+  const { challenge, message } = await api.walletChallenge({ action, email, address });
+  const signer = await signerFor(config, address);
+  const signature = await signer.signMessage(message);
+  return { address, challenge, signature };
+}
+
+async function publicWalletMatches(config: Config, address: string): Promise<boolean> {
+  if (typeof window === 'undefined' || !window.ethereum) return false;
+  try {
+    const [accounts, chainId] = await Promise.all([
+      window.ethereum.request({ method: 'eth_accounts' }),
+      window.ethereum.request({ method: 'eth_chainId' }),
+    ]);
+    return Array.isArray(accounts) && accounts.some(account =>
+      typeof account === 'string' && account.toLowerCase() === address.toLowerCase()
+    ) && Number(chainId) === config.chainId;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Validates and restores the authenticated session with the server.
  */
-export async function restoreSession(): Promise<UserAccount | null> {
+export async function restoreSession(config?: Config): Promise<UserAccount | null> {
   const token = getAuthToken();
   if (!token) {
     setSessionUser(null);
@@ -133,6 +156,11 @@ export async function restoreSession(): Promise<UserAccount | null> {
   try {
     const res = await api.session(token);
     if (res.ok && res.user) {
+      if (config?.mode === 'public' && !(await publicWalletMatches(config, res.user.address))) {
+        setAuthToken(null);
+        setSessionUser(null);
+        return null;
+      }
       setSessionUser(res.user);
       return res.user;
     }
@@ -149,12 +177,13 @@ export async function restoreSession(): Promise<UserAccount | null> {
 /**
  * Real authentication via server login endpoint.
  */
-export async function loginWithEmail(email: string, password: string): Promise<UserAccount> {
+export async function loginWithEmail(email: string, password: string, config?: Config): Promise<UserAccount> {
   const cleanEmail = email.trim().toLowerCase();
   if (!cleanEmail) throw new Error('Please enter your email address');
   if (!password) throw new Error('Please enter your password');
 
-  const res = await api.login({ email: cleanEmail, password });
+  const proof = config?.mode === 'public' ? await walletProof(config, 'login', cleanEmail) : {};
+  const res = await api.login({ email: cleanEmail, password, ...proof });
   if (!res.ok || !res.token || !res.user) {
     throw new Error('Authentication failed');
   }
@@ -194,6 +223,8 @@ export async function registerUser(
   if (!cleanEmail || !cleanEmail.includes('@')) throw new Error('Please enter a valid email address');
   if (input.password.length < 6) throw new Error('Password must be at least 6 characters long');
 
+  const proof = config.mode === 'public' ? await walletProof(config, 'register', cleanEmail) : {};
+
   // Submit registration to server
   const res = await api.register({
     name: trimmedName,
@@ -201,6 +232,7 @@ export async function registerUser(
     password: input.password,
     role: input.role,
     address: input.address,
+    ...proof,
   });
 
   if (!res.ok || !res.token || !res.user) {

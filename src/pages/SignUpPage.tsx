@@ -151,7 +151,7 @@ export default function SignUpPage({ config, onSuccess }: SignUpPageProps) {
       setBusy('Verifying code & confirming email...');
       await api.verifyOtp(email.trim().toLowerCase(), cleanCode);
 
-      setBusy('Generating cryptographic keys & initializing custody...');
+      setBusy(config.mode === 'public' ? 'Confirming wallet ownership and creating account...' : 'Generating cryptographic keys & initializing custody...');
       const user = await registerUser(
         {
           name: name.trim(),
@@ -279,6 +279,7 @@ export default function SignUpPage({ config, onSuccess }: SignUpPageProps) {
                   <p>
                     Once verified, a dedicated RSA-OAEP encryption keypair will be created securely
                     inside your browser. No private keys are ever stored on our servers.
+                    {config?.mode === 'public' && ' Your connected wallet will also ask you to sign a one-time account verification message.'}
                   </p>
                 </div>
               </div>
