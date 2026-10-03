@@ -1,0 +1,6 @@
+export function Brand({ small = false }: { small?: boolean }) {
+  return <div className={`brand ${small ? 'small' : ''}`}><span className="brand-mark"><svg viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="M20 33V18M20 25C9 26 8 13 9 7c8 1 13 7 11 18Zm0-7C20 10 26 6 33 6c0 8-4 14-13 15" stroke="currentColor" strokeWidth="2.7" strokeLinecap="round" strokeLinejoin="round" /></svg></span><span>heirloom<span className="brand-period">.</span></span></div>;
+}
+export function VaultIllustration() {
+  return <div className="vault-illustration" aria-hidden="true"><div className="orbit orbit-one"/><div className="orbit orbit-two"/><div className="spark s1">✦</div><div className="spark s2">✧</div><div className="vault-shadow"/><div className="vault-body"><div className="vault-door"><span className="hinge top"/><span className="hinge bottom"/><div className="dial"><span/><i/><b/></div><span className="vault-dot"/></div></div><div className="floating-shield"><svg viewBox="0 0 32 32"><path d="M16 3 27 7v9c0 7-11 13-11 13S5 23 5 16V7z" fill="none" stroke="currentColor" strokeWidth="2"/><path d="m10 16 4 4 8-9" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg></div><div className="leaf leaf-one"/><div className="leaf leaf-two"/></div>;
+}
