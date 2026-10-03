@@ -84,6 +84,20 @@ test('challenge starts at quorum and two guardians recover while the third is un
   assert.equal(Number((await f.contract.getVault(f.vaultId)).status), 2);
   assert.equal(await f.contract.hasApproved(f.vaultId, req, f.addresses[4]), false);
 });
+test('third guardian may attest during pending recovery without restarting the challenge', async () => {
+  const f = await create(), req = await request(f);
+  await approvals(f, req);
+  const quorumAt = (await f.contract.getVault(f.vaultId)).quorumAt;
+  await advance(10);
+  await (await f.contract.connect(signers[4]).approveRecovery(f.vaultId, req)).wait();
+  const v = await f.contract.getVault(f.vaultId);
+  assert.equal(Number(v.approvalCount), 3);
+  assert.equal(v.quorumAt, quorumAt);
+  await rejects(() => f.contract.connect(signers[1]).finalizeRecovery.staticCall(f.vaultId, req), 'ChallengeActive');
+  await advance(21);
+  await (await f.contract.connect(signers[1]).finalizeRecovery(f.vaultId, req)).wait();
+  assert.equal(Number((await f.contract.getVault(f.vaultId)).status), 2);
+});
 test('owner cancellation invalidates old approvals and cannot be triggered by another account', async () => {
   const f = await create(), req = await request(f); await approvals(f, req);
   await rejects(() => f.contract.connect(signers[1]).checkIn.staticCall(f.vaultId), 'Unauthorized');
