@@ -1,7 +1,8 @@
 import express from 'express';
 import { Contract, JsonRpcProvider, verifyMessage, keccak256 } from 'ethers';
 import { validateDeployment } from '../shared/chain-safety.mjs';
-import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, readdirSync } from 'node:fs';
+import { basename } from 'node:path';
 import { randomBytes, randomInt, pbkdf2Sync } from 'node:crypto';
 import { digest, identityMessage, releaseMessage } from '../shared/protocol.mjs';
 import { validatePackageShape, validateIdentity, validateReleaseContext, validateRecoveryKit, validateRegistration } from './validation.mjs';
@@ -20,7 +21,32 @@ async function verifyDeployment() {
 await verifyDeployment();
 const file = `.runtime/relay-${config.deploymentId.slice(2, 18)}.json`;
 let data = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { identities: {}, packages: {}, releases: {} };
+if (!data.identities) data.identities = {};
+if (!data.packages) data.packages = {};
+if (!data.releases) data.releases = {};
+if (!data.users) data.users = {};
+if (!data.sessions) data.sessions = {};
+
+if (existsSync('.runtime') && (!Object.keys(data.users).length || !Object.keys(data.sessions).length)) {
+  for (const prev of readdirSync('.runtime')) {
+    if (prev.startsWith('relay-') && prev.endsWith('.json') && prev !== basename(file)) {
+      try {
+        const prevData = JSON.parse(readFileSync(`.runtime/${prev}`, 'utf8'));
+        if (prevData.users && Object.keys(prevData.users).length) {
+          data.users = { ...prevData.users, ...data.users };
+        }
+        if (prevData.sessions && Object.keys(prevData.sessions).length) {
+          data.sessions = { ...prevData.sessions, ...data.sessions };
+        }
+      } catch {}
+    }
+  }
+}
+
 function save(next = data) {
+  if (!next || typeof next !== 'object') {
+    throw new Error('Data payload required to persist relay state');
+  }
   mkdirSync('.runtime', { recursive: true });
   writeFileSync(`${file}.tmp`, JSON.stringify(next));
   renameSync(`${file}.tmp`, file);
@@ -45,14 +71,58 @@ app.use((req, res, next) => {
 });
 app.get('/api/config', route(async (_req, res) => {
   await verifyDeployment();
-  const block = await provider.getBlock('latest'); res.json({ ...config, rpcUrl: config.mode === 'local' ? config.rpcUrl : undefined, blockTimestamp: block.timestamp, blockNumber: block.number });
+  const block = await provider.getBlock('latest');
+  const demoActors = (config.actors || []).map(a => ({ ...a, isDemo: true }));
+  const registeredActors = Object.values(data.users || {}).map(u => ({
+    address: u.address,
+    name: u.name,
+    role: u.role,
+    initials: u.initials || u.name.split(/\s+/).map(p => p[0]).filter(Boolean).slice(0, 2).join('').toUpperCase() || 'HL',
+    isDemo: false
+  }));
+  const mergedActors = [...demoActors];
+  for (const reg of registeredActors) {
+    const existingIndex = mergedActors.findIndex(a => same(a.address, reg.address));
+    if (existingIndex >= 0) {
+      mergedActors[existingIndex] = { ...mergedActors[existingIndex], ...reg };
+    } else {
+      mergedActors.push(reg);
+    }
+  }
+  res.json({
+    ...config,
+    actors: mergedActors,
+    rpcUrl: config.mode === 'local' ? config.rpcUrl : undefined,
+    blockTimestamp: block.timestamp,
+    blockNumber: block.number
+  });
 }));
-app.get('/api/identities', (_req, res) => res.json(Object.values(data.identities)));
+app.get('/api/identities', (_req, res) => {
+  const list = Object.values(data.identities).map(id => {
+    const user = Object.values(data.users || {}).find(u => same(u.address, id.address));
+    const actor = config.actors?.find(a => same(a.address, id.address));
+    const name = user?.name || actor?.name || id.name;
+    const role = user?.role || actor?.role || id.role;
+    return {
+      ...id,
+      ...(name ? { name } : {}),
+      ...(role ? { role } : {}),
+    };
+  });
+  res.json(list);
+});
 app.post('/api/identities', route(async (req, res) => {
   const identity = req.body; const address = identity.address?.toLowerCase();
   validateIdentity(identity, data.identities[address]);
   validSignature(identityMessage(config, identity.address, identity.publicKey), identity.signature, identity.address);
-  save({ ...data, identities: { ...data.identities, [address]: identity } }); res.json({ ok: true });
+  const user = Object.values(data.users || {}).find(u => same(u.address, identity.address));
+  const actor = config.actors?.find(a => same(a.address, identity.address));
+  const recordToSave = {
+    ...identity,
+    ...(identity.name || user?.name || actor?.name || data.identities[address]?.name ? { name: identity.name || user?.name || actor?.name || data.identities[address]?.name } : {}),
+    ...(identity.role || user?.role || actor?.role || data.identities[address]?.role ? { role: identity.role || user?.role || actor?.role || data.identities[address]?.role } : {})
+  };
+  save({ ...data, identities: { ...data.identities, [address]: recordToSave } }); res.json({ ok: true });
 }));
 app.get('/api/packages', (_req, res) => res.json(Object.values(data.packages)));
 app.get('/api/kits/:vaultId', route(async (req, res) => {
@@ -240,10 +310,11 @@ Protect what matters. Pass it on.`;
     const data = await resendRes.json();
     if (!resendRes.ok) {
       console.warn('Resend API notice:', data);
-      if (allowDemoCode && data?.message?.includes('testing emails')) {
+      const msg = data?.message || '';
+      if (allowDemoCode && (msg.includes('testing email') || msg.includes('own email address') || msg.includes('verify a domain') || resendRes.status === 403 || resendRes.status === 422)) {
         devNotice = `Note: Resend trial domain only delivers to the account owner's email. For local testing, your verification code is: ${code}`;
       } else {
-        throw new Error(data.message || 'Failed to deliver verification email');
+        devNotice = `Email delivery notice: ${msg || 'Check email service configuration'}. Test code: ${code}`;
       }
     } else {
       emailSent = true;
@@ -297,7 +368,17 @@ app.post('/api/auth/verify-otp', route(async (req, res) => {
 }));
 
 function hashPassword(password, salt) {
-  return pbkdf2Sync(password, salt, 100000, 64, 'sha512').toString('hex');
+  if (typeof password !== 'string' || !password) {
+    throw new Error('Password must be a non-empty string');
+  }
+  if (typeof salt !== 'string' || !salt) {
+    throw new Error('Account cryptographic salt is missing');
+  }
+  try {
+    return pbkdf2Sync(password, salt, 100000, 64, 'sha512').toString('hex');
+  } catch {
+    throw new Error('Failed to compute password hash');
+  }
 }
 
 async function allocateAddress(preferredAddress) {
@@ -356,15 +437,28 @@ app.post('/api/auth/register', route(async (req, res) => {
     createdAt: Date.now()
   };
 
-  const token = randomBytes(32).toString('hex');
-  const sessions = { ...(data.sessions || {}), [token]: {
+  const session = {
     userId: user.id,
     email: user.email,
     createdAt: Date.now(),
     expiresAt: Date.now() + 7 * 86400 * 1000
-  } };
+  };
 
-  save({ ...data, users: { ...users, [cleanEmail]: user }, sessions });
+  const nextIdentities = { ...data.identities };
+  if (nextIdentities[assignedAddress]) {
+    nextIdentities[assignedAddress] = {
+      ...nextIdentities[assignedAddress],
+      name: cleanName,
+      role: cleanRole
+    };
+  }
+
+  save({
+    ...data,
+    identities: nextIdentities,
+    users: { ...(data.users || {}), [cleanEmail]: user },
+    sessions: { ...(data.sessions || {}), [token]: session }
+  });
   verifiedEmails.delete(cleanEmail);
 
   res.json({
@@ -384,25 +478,40 @@ app.post('/api/auth/register', route(async (req, res) => {
 app.post('/api/auth/login', route(async (req, res) => {
   const { email, password } = req.body || {};
   const cleanEmail = email?.trim()?.toLowerCase();
-  if (!cleanEmail || !password) throw new Error('Email and password are required');
+  if (!cleanEmail || typeof password !== 'string' || !password) {
+    throw new Error('Email and password are required');
+  }
 
   data.users = data.users || {};
   const user = data.users[cleanEmail];
   if (!user) throw new Error('Invalid email or password');
 
-  const computedHash = hashPassword(password, user.salt);
+  if (!user.salt || !user.passwordHash) {
+    throw new Error('Invalid account configuration. Please re-register.');
+  }
+
+  let computedHash;
+  try {
+    computedHash = hashPassword(password, user.salt);
+  } catch {
+    throw new Error('Invalid email or password');
+  }
+
   if (computedHash !== user.passwordHash) {
     throw new Error('Invalid email or password');
   }
 
   const token = randomBytes(32).toString('hex');
-  const sessions = { ...(data.sessions || {}), [token]: {
+  const session = {
     userId: user.id,
     email: user.email,
     createdAt: Date.now(),
     expiresAt: Date.now() + 7 * 86400 * 1000
-  } };
-  save({ ...data, sessions });
+  };
+  save({
+    ...data,
+    sessions: { ...(data.sessions || {}), [token]: session }
+  });
 
   res.json({
     ok: true,
@@ -425,15 +534,18 @@ app.post('/api/auth/demo-login', route(async (req, res) => {
   if (!actor) throw new Error('Demo actor not found');
 
   const token = `demo_tok_${randomBytes(24).toString('hex')}`;
-  const sessions = { ...(data.sessions || {}), [token]: {
+  const session = {
     userId: `demo_${actor.address.toLowerCase()}`,
     email: `${actor.name.toLowerCase().replace(/\s+/g, '.')}@heirloom.local`,
     isDemo: true,
     actorAddress: actor.address,
     createdAt: Date.now(),
     expiresAt: Date.now() + 7 * 86400 * 1000
-  } };
-  save({ ...data, sessions });
+  };
+  save({
+    ...data,
+    sessions: { ...(data.sessions || {}), [token]: session }
+  });
 
   res.json({
     ok: true,
@@ -501,8 +613,9 @@ app.post('/api/auth/logout', route(async (req, res) => {
   const authHeader = req.headers.authorization;
   const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : req.body?.token;
   if (token && data.sessions?.[token]) {
-    const sessions = { ...data.sessions }; delete sessions[token];
-    save({ ...data, sessions });
+    const nextSessions = { ...data.sessions };
+    delete nextSessions[token];
+    save({ ...data, sessions: nextSessions });
   }
   res.json({ ok: true });
 }));

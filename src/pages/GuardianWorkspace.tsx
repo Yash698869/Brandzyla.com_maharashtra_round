@@ -23,13 +23,14 @@ import {
 import { Brand } from '../components/Brand';
 import UserMenu from '../components/UserMenu';
 import { useRouter } from '../lib/router';
-import type { Config, Actor, Vault, TimelineEvent } from '../lib/types';
-import type { UserAccount } from '../lib/auth';
+import type { Config, Actor, Vault, TimelineEvent, IdentityRecord } from '../lib/types';
+import { formatActorName, type UserAccount } from '../lib/auth';
 
 interface GuardianWorkspaceProps {
   currentUser: UserAccount;
   actor: Actor;
   config: Config;
+  identities?: IdentityRecord[];
   vaults: Vault[];
   events: TimelineEvent[];
   time: number;
@@ -59,6 +60,7 @@ export default function GuardianWorkspace({
   currentUser,
   actor,
   config,
+  identities,
   vaults,
   events,
   time,
@@ -110,9 +112,11 @@ export default function GuardianWorkspace({
   );
 
   function nameOf(address: string) {
-    if (same(currentUser.address, address)) return currentUser.name;
+    if (same(currentUser.address, address)) return formatActorName(currentUser.name);
+    const fromIdentity = identities?.find(i => same(i.address, address))?.name;
+    if (fromIdentity) return formatActorName(fromIdentity);
     const found = config.actors.find(a => same(a.address, address));
-    return found ? found.name : short(address);
+    return found ? formatActorName(found.name) : short(address);
   }
 
   return (

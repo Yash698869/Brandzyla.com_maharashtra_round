@@ -111,6 +111,15 @@ export function getStoredUsers(defaultActors: Actor[] = []): UserAccount[] {
   return getDefaultDemoUsers(defaultActors);
 }
 
+export function formatActorName(name?: string): string {
+  if (!name) return '';
+  return name
+    .trim()
+    .split(/\s+/)
+    .map(word => (word ? word.charAt(0).toUpperCase() + word.slice(1) : ''))
+    .join(' ');
+}
+
 /**
  * Validates and restores the authenticated session with the server.
  */
@@ -215,6 +224,8 @@ export async function registerUser(
           address: user.address,
           publicKey: identity.publicKey,
           signature,
+          name: user.name,
+          role: user.role,
         });
       } catch (e) {
         console.warn('Could not auto-enroll identity signature on local relay:', e);

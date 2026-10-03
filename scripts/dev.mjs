@@ -4,6 +4,10 @@ import { readFileSync, existsSync, mkdirSync, openSync, writeFileSync } from 'no
 import { validateDeployment } from '../shared/chain-safety.mjs';
 import { deploy } from './deploy.mjs';
 
+if (existsSync('.env') && typeof process.loadEnvFile === 'function') {
+  try { process.loadEnvFile(); } catch { }
+}
+
 const children = []; mkdirSync('.runtime', { recursive: true });
 function run(args, logfile) {
   const fd = logfile ? openSync(`.runtime/${logfile}`, 'a') : undefined;

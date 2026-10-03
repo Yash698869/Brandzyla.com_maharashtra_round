@@ -77,7 +77,7 @@ export default function DevDemoDrawer({
           </div>
 
           <div className="dev-actor-cards-grid">
-            {config.actors.map(a => {
+            {config.actors.filter(a => a.isDemo !== false).slice(0, 5).map(a => {
               const isCurrent = a.address.toLowerCase() === currentActorAddress?.toLowerCase();
               const Icon =
                 a.role === 'owner' ? ShieldCheck : a.role === 'beneficiary' ? Gift : KeyRound;

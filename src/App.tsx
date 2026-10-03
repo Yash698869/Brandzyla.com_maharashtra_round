@@ -29,6 +29,7 @@ import {
   restoreSession,
   loginDemoActor,
   logoutUser,
+  formatActorName,
   type UserAccount,
 } from './lib/auth';
 import { api } from './lib/api';
@@ -167,10 +168,13 @@ function AppContent() {
       setError(friendlyError(e));
     }
   };
-  const nameOf = (address: string) =>
-    currentUser && same(currentUser.address, address)
-      ? currentUser.name
-      : config?.actors.find(a => same(a.address, address))?.name ?? short(address);
+  const nameOf = (address: string) => {
+    if (currentUser && same(currentUser.address, address)) return formatActorName(currentUser.name);
+    const identity = identities.find(i => same(i.address, address));
+    if (identity?.name) return formatActorName(identity.name);
+    const actor = config?.actors.find(a => same(a.address, address));
+    return actor?.name ? formatActorName(actor.name) : short(address);
+  };
 
   const refresh = useCallback(async (c: Config) => {
     await verifyDeployment(c);
@@ -927,6 +931,7 @@ function AppContent() {
           currentUser={currentUser}
           actor={actor || { address: currentUser.address, name: currentUser.name, role: 'beneficiary', initials: currentUser.initials }}
           config={config!}
+          identities={identities}
           vaults={vaults}
           events={events}
           time={time}
@@ -974,6 +979,7 @@ function AppContent() {
           currentUser={currentUser}
           actor={actor || { address: currentUser.address, name: currentUser.name, role: 'guardian', initials: currentUser.initials }}
           config={config!}
+          identities={identities}
           vaults={vaults}
           events={events}
           time={time}
@@ -1410,6 +1416,13 @@ function AppContent() {
                 {/* GUARDIAN ACTIONS */}
                 {currentUser && current.state.guardians.some(g => same(g, currentUser.address)) ? (
                   <>
+                    {current.state.status === 0 && (
+                      <div className="permission-disabled-note">
+                        <span>
+                          Guardian approval not open yet: This vault is active. Guardians can attest once the owner misses a check-in and beneficiary {nameOf(current.state.beneficiary)} requests recovery.
+                        </span>
+                      </div>
+                    )}
                     {current.state.status === 1 && (
                       <>
                         <div className="attestation-note">
