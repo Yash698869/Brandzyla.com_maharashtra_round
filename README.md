@@ -49,8 +49,51 @@ The public app opens at [port 5174](http://127.0.0.1:5174), with a separate rela
 
 New public-mode wallet enrollments create a passphrase-encrypted **identity backup** file. Download it, reselect it to verify restoration, then sign enrollment. To restore in another browser profile, connect the same wallet address and choose **Restore identity** with that file and passphrase. Each of the five roles can use a separate browser profile on the same PC; that separates browser key storage, but does not prove independent devices or people. The asset recovery kit is a different file and does not contain the browser identity key.
 
+## Three Distinct Workspaces & Role-Based Routing
+
+Heirloom provides three tailored, distinct workspaces for the three kinds of people using digital inheritance:
+
+1. **Vault Owner Workspace (`/owner`)**:
+   - **Purpose**: Configure asset protection, manage inactivity check-in deadlines, monitor active recovery challenges, and cancel unauthorized claims.
+   - **Key Views**:
+     - *My Vaults*: Browse encrypted assets, check-in intervals, and guardian quorum policies.
+     - *Check-In Manager*: Table of all owned vaults showing inactivity deadlines, challenge status, and one-click check-in.
+     - *Activity Log*: On-chain transaction receipts for vault creation, check-ins, and policy updates.
+     - *Prominent Recovery Challenge Alert*: When guardians reach quorum to attest incapacity, a prominent banner appears alerting the owner, with an immediate "I'm Here — Cancel Recovery" action to stop the claim within the challenge period.
+
+2. **Beneficiary Workspace (`/beneficiary`)**:
+   - **Purpose**: Custody designated vaults, monitor recovery eligibility, initiate claims after owner inactivity, track guardian attestations, and decrypt inherited assets locally.
+   - **Key Views**:
+     - *Designated Vaults*: Vaults where the connected wallet is the contract-named beneficiary, with contextual status explanations (Protected, Eligible for Recovery, Challenge Window Active, Ready to Finalize, or Ready to Decrypt).
+     - *Active Claims*: Detailed progress tracking for claims undergoing guardian attestation and the owner challenge countdown.
+     - *Local Decryption*: Local client-side AES-256 reconstruction from verified guardian key shares and instant plaintext download.
+
+3. **Trusted Guardian Workspace (`/guardian`)**:
+   - **Purpose**: Independent custodian duty. Review beneficiary recovery claims, attest to owner incapacity after independent verification, and deliver encrypted key shares upon on-chain finalization.
+   - **Key Views**:
+     - *Attestation Inbox*: Actionable recovery requests requiring attention, displaying owner/beneficiary details, quorum progress, challenge duration, and the legally-critical independent verification notice.
+     - *Guarded Vaults*: All vaults where the connected wallet holds an encrypted 1-of-3 key share.
+     - *Encrypted Share Release*: Secure delivery of recipient-encrypted Shamir shares directly to the designated beneficiary once recovery has finalized on Ethereum. Private key shares are never rendered in page text or logs.
+
+### Navigation, Access Control & Multi-Role Coherence
+
+- **Role-Based Home Redirection**: After authenticating at `/login` or completing OTP sign-up at `/signup`, users are automatically routed to their persisted role home (`/owner`, `/beneficiary`, or `/guardian`). Accessing generic `/app` routes redirects directly to their role workspace.
+- **Session Persistence**: Page reloads preserve the authenticated session and return to the active workspace.
+- **Access Denial**: If a user attempts to manually navigate to another role's workspace (e.g. an Owner accessing `/guardian`), a dedicated **Access Restricted** screen explains the required capability, displays their connected wallet, and provides a direct return button.
+- **Multi-Role "Assigned to me" Support**: If a user's primary profile role is Vault Owner, but their connected wallet is also named as a beneficiary or guardian on other vaults on-chain, their workspace displays an **"Assigned to me"** section in the sidebar. This ensures on-chain responsibilities are immediately accessible without resorting to fake actor switching.
+- **Strict On-Chain Wallet Authorization**: A user's profile role controls UI presentation; the connected Ethereum wallet and smart contract remain the sole authority for blockchain actions. If an account attempts an action on a vault where its wallet is not authorized, the action is disabled and the mismatch is clearly explained.
+
+### Standard User Menu vs. Development Demo
+
+- **Standard User Menu**: Located in the top-right header, displaying full name, email address, role badge, connected wallet address with copy button, and **Sign Out**. The menu contains **no "Switch Profile / Account"** or fake switching controls.
+- **Development Demo Drawer**: On local chains (`31337`), an explicitly labelled **DEVELOPMENT DEMO** bottom drawer is available for evaluators to switch between the 5 pre-funded Hardhat accounts (Alex Morgan, Sam Morgan, Maya Chen, James Wilson, Priya Shah) and immediately inspect their respective workspaces. This evaluation drawer is **absent from public testnet and production modes**.
+
+
 ## What is implemented
 
+- Public landing page at `/` with clear human explanation, protocol diagrams, and prominent CTAs.
+- Dedicated `/signup` and `/login` pages with real email OTP verification and session token authentication.
+- Protected workspace routing (`/app`) with redirect persistence and session restoration.
 - File or note encryption with AES-256-GCM; file name, MIME type, and contents are encrypted. Maximum file size: 5 MB.
 - Two-of-three Shamir sharing using Privy's existing library. RSA-OAEP identities wrap fresh AES share-envelope keys.
 - Five distinct contract roles: owner, beneficiary, and three guardians. No admin, upgrade, token, or custody of cryptocurrency funds.
