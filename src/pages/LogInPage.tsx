@@ -219,7 +219,7 @@ export default function LogInPage({ config, onSuccess }: LogInPageProps) {
 
                 <div className="demo-login-explainer">
                   <small>
-                    Five pre-funded local Hardhat accounts with real on-chain transaction permissions:
+                    {demoActors.length} pre-funded local Hardhat accounts with real on-chain transaction permissions:
                   </small>
                 </div>
 

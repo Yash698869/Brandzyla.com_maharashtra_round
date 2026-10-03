@@ -89,6 +89,9 @@ test('owner cancellation invalidates old approvals and cannot be triggered by an
   await rejects(() => f.contract.connect(signers[1]).checkIn.staticCall(f.vaultId), 'Unauthorized');
   await (await f.contract.checkIn(f.vaultId)).wait();
   assert.equal(Number((await f.contract.getVault(f.vaultId)).status), 0);
+  assert.equal((await f.contract.getVault(f.vaultId)).selectedBeneficiary, ZeroAddress);
+  assert.equal(await f.contract.hasApproved(f.vaultId, req, f.addresses[2]), false);
+  assert.equal(await f.contract.hasApproved(f.vaultId, req, f.addresses[3]), false);
   await rejects(() => f.contract.connect(signers[1]).finalizeRecovery.staticCall(f.vaultId, req), 'NoPendingRecovery');
   const next = await request(f); assert.equal(next, req + 1);
   await rejects(() => f.contract.connect(signers[2]).approveRecovery.staticCall(f.vaultId, req), 'StaleRequest');
@@ -108,4 +111,181 @@ test('unknown vault and duplicate registration are rejected', async () => {
   const f = await create();
   await rejects(() => f.contract.registerVault.staticCall(...f.args), 'VaultAlreadyExists');
   await rejects(() => f.contract.getVault(id('unknown')), 'VaultNotFound');
+});
+
+async function successionFixture(overrides = {}) {
+  const f = await fixture();
+  const policy = {
+    beneficiary: f.addresses[1], backupBeneficiary: f.addresses[5],
+    guardians: f.addresses.slice(2, 5), inactivity: 60, challenge: 30,
+    backupWaitingDuration: 90, beneficiaryKeyHash: id('primary key'),
+    backupBeneficiaryKeyHash: id('backup key'), ...overrides,
+  };
+  return { ...f, policy };
+}
+async function createSuccession(overrides = {}) {
+  const f = await successionFixture(overrides);
+  f.registration = await (await f.contract.registerSuccessionVault(f.vaultId, f.policy, id('succession package'))).wait();
+  return f;
+}
+async function at(timestamp) { await provider.send('evm_setNextBlockTimestamp', [Number(timestamp)]); await provider.send('evm_mine', []); }
+function events(f, receipt) { return receipt.logs.map(log => { try { return f.contract.interface.parseLog(log); } catch { return null; } }).filter(Boolean); }
+
+test('legacy registration remains primary-only and snapshots the primary recipient', async () => {
+  const f = await create();
+  const v = await f.contract.getVault(f.vaultId);
+  assert.equal(Number(v.policyVersion), 1);
+  assert.equal(v.backupBeneficiary, ZeroAddress);
+  assert.equal(v.backupWaitingDuration, 0n);
+  assert.equal(v.backupBeneficiaryKeyHash, ZeroHash);
+  assert.equal(v.selectedBeneficiary, ZeroAddress);
+  await request(f);
+  assert.equal((await f.contract.getVault(f.vaultId)).selectedBeneficiary, f.addresses[1]);
+});
+
+test('succession registration commits an optional backup and emits its policy', async () => {
+  const f = await createSuccession();
+  const v = await f.contract.getVault(f.vaultId);
+  assert.equal(Number(v.policyVersion), 2);
+  assert.equal(v.backupBeneficiary, f.addresses[5]);
+  assert.equal(v.backupWaitingDuration, 90n);
+  assert.equal(v.beneficiaryKeyHash, id('primary key'));
+  assert.equal(v.backupBeneficiaryKeyHash, id('backup key'));
+  assert.equal(v.selectedBeneficiary, ZeroAddress);
+  const event = events(f, f.registration).find(event => event.name === 'VaultPolicyRegistered');
+  assert.ok(event);
+  assert.equal(Number(event.args.policyVersion), 2);
+  assert.equal(event.args.backupBeneficiary, f.addresses[5]);
+  assert.equal(event.args.backupWaitingDuration, 90n);
+  assert.equal(event.args.beneficiaryKeyHash, id('primary key'));
+  assert.equal(event.args.backupBeneficiaryKeyHash, id('backup key'));
+  const primaryOnly = await createSuccession({ backupBeneficiary: ZeroAddress, backupWaitingDuration: 0, backupBeneficiaryKeyHash: ZeroHash });
+  await advance(61);
+  await (await primaryOnly.contract.connect(signers[1]).requestRecovery(primaryOnly.vaultId)).wait();
+  assert.equal((await primaryOnly.contract.getVault(primaryOnly.vaultId)).selectedBeneficiary, primaryOnly.addresses[1]);
+  await rejects(() => primaryOnly.contract.connect(signers[5]).requestRecovery.staticCall(primaryOnly.vaultId), 'Unauthorized');
+  await rejects(() => f.contract.registerSuccessionVault.staticCall(f.vaultId, f.policy, id('package')), 'VaultAlreadyExists');
+});
+
+test('succession registration rejects inconsistent backup values, role overlap and key reuse', async () => {
+  const f = await successionFixture();
+  const invalidPolicies = [
+    { backupBeneficiary: f.addresses[0] }, { backupBeneficiary: f.addresses[1] },
+    ...f.addresses.slice(2, 5).map(backupBeneficiary => ({ backupBeneficiary })),
+    { backupWaitingDuration: 0 }, { backupBeneficiaryKeyHash: ZeroHash },
+    { backupBeneficiaryKeyHash: id('primary key') },
+    { backupBeneficiary: ZeroAddress },
+    { backupBeneficiary: ZeroAddress, backupBeneficiaryKeyHash: ZeroHash },
+    { backupBeneficiary: ZeroAddress, backupWaitingDuration: 0 },
+    { beneficiary: ZeroAddress }, { beneficiary: f.addresses[0] },
+    { beneficiaryKeyHash: ZeroHash }, { inactivity: 0 }, { challenge: 0 },
+    { guardians: [ZeroAddress, f.addresses[3], f.addresses[4]] },
+    { guardians: [f.addresses[0], f.addresses[3], f.addresses[4]] },
+    { guardians: [f.addresses[1], f.addresses[3], f.addresses[4]] },
+    { guardians: [f.addresses[2], f.addresses[2], f.addresses[4]] },
+  ];
+  for (const invalid of invalidPolicies) {
+    await rejects(() => f.contract.registerSuccessionVault.staticCall(f.vaultId, { ...f.policy, ...invalid }, id('package')), 'InvalidPolicy');
+  }
+  await rejects(() => f.contract.registerSuccessionVault.staticCall(ZeroHash, f.policy, id('package')), 'InvalidPolicy');
+  await rejects(() => f.contract.registerSuccessionVault.staticCall(f.vaultId, f.policy, ZeroHash), 'InvalidPolicy');
+});
+
+test('primary becomes eligible at inactivity and backup waits until its exact deadline', async () => {
+  const f = await createSuccession(), start = (await f.contract.getVault(f.vaultId)).lastCheckIn;
+  await at(start + 59n);
+  await rejects(() => f.contract.connect(signers[1]).requestRecovery.staticCall(f.vaultId), 'OwnerStillActive');
+  await at(start + 60n);
+  await f.contract.connect(signers[1]).requestRecovery.staticCall(f.vaultId);
+  await rejects(() => f.contract.connect(signers[5]).requestRecovery.staticCall(f.vaultId), 'OwnerStillActive');
+  await at(start + 149n);
+  await rejects(() => f.contract.connect(signers[5]).requestRecovery.staticCall(f.vaultId), 'OwnerStillActive');
+  await provider.send('evm_setNextBlockTimestamp', [Number(start + 150n)]);
+  const receipt = await (await f.contract.connect(signers[5]).requestRecovery(f.vaultId, { gasLimit: 500_000 })).wait();
+  assert.equal((await provider.getBlock(receipt.blockNumber)).timestamp, Number(start + 150n));
+  assert.equal((await f.contract.getVault(f.vaultId)).selectedBeneficiary, f.addresses[5]);
+  assert.equal(events(f, receipt).find(event => event.name === 'RecoveryRequested').args.beneficiary, f.addresses[5]);
+});
+
+test('pending primary or backup request cannot be displaced by the other recipient', async () => {
+  for (const selected of [1, 5]) {
+    const f = await createSuccession();
+    await advance(151);
+    await (await f.contract.connect(signers[selected]).requestRecovery(f.vaultId)).wait();
+    for (const caller of [1, 5]) await rejects(() => f.contract.connect(signers[caller]).requestRecovery.staticCall(f.vaultId), 'RecoveryAlreadyPending');
+    await rejects(() => f.contract.connect(signers[6]).requestRecovery.staticCall(f.vaultId), 'Unauthorized');
+    const v = await f.contract.getVault(f.vaultId);
+    assert.equal(v.selectedBeneficiary, f.addresses[selected]);
+    assert.equal(v.requestId, 1n);
+  }
+});
+
+test('backup requires two guardians and the full challenge, then only backup finalizes', async () => {
+  const f = await createSuccession();
+  await advance(151);
+  await (await f.contract.connect(signers[5]).requestRecovery(f.vaultId)).wait();
+  await rejects(() => f.contract.connect(signers[6]).approveRecovery.staticCall(f.vaultId, 1), 'Unauthorized');
+  await rejects(() => f.contract.connect(signers[5]).finalizeRecovery.staticCall(f.vaultId, 1), 'QuorumNotMet');
+  await (await f.contract.connect(signers[2]).approveRecovery(f.vaultId, 1)).wait();
+  await rejects(() => f.contract.connect(signers[2]).approveRecovery.staticCall(f.vaultId, 1), 'AlreadyApproved');
+  await advance(100);
+  await rejects(() => f.contract.connect(signers[5]).finalizeRecovery.staticCall(f.vaultId, 1), 'QuorumNotMet');
+  const receipt = await (await f.contract.connect(signers[3]).approveRecovery(f.vaultId, 1)).wait();
+  const v = await f.contract.getVault(f.vaultId);
+  assert.equal(v.approvalCount, 2n);
+  assert.equal(await f.contract.hasApproved(f.vaultId, 1, f.addresses[4]), false);
+  assert.equal(events(f, receipt).find(event => event.name === 'ChallengeStarted').args.releaseAfter, v.quorumAt + 30n);
+  await rejects(() => f.contract.connect(signers[5]).finalizeRecovery.staticCall(f.vaultId, 1), 'ChallengeActive');
+  await at(v.quorumAt + 29n);
+  await rejects(() => f.contract.connect(signers[5]).finalizeRecovery.staticCall(f.vaultId, 1), 'ChallengeActive');
+  for (const caller of [0, 1, 2, 6]) await rejects(() => f.contract.connect(signers[caller]).finalizeRecovery.staticCall(f.vaultId, 1), 'Unauthorized');
+  await provider.send('evm_setNextBlockTimestamp', [Number(v.quorumAt + 30n)]);
+  const finalized = await (await f.contract.connect(signers[5]).finalizeRecovery(f.vaultId, 1, { gasLimit: 500_000 })).wait();
+  const done = await f.contract.getVault(f.vaultId);
+  assert.equal(Number(done.status), 2);
+  assert.equal(done.selectedBeneficiary, f.addresses[5]);
+  assert.equal(done.finalizedAt, v.quorumAt + 30n);
+  assert.equal(events(f, finalized).find(event => event.name === 'RecoveryFinalized').args.beneficiary, f.addresses[5]);
+  await rejects(() => f.contract.checkIn.staticCall(f.vaultId), 'AlreadyFinalized');
+  for (const caller of [1, 5]) await rejects(() => f.contract.connect(signers[caller]).requestRecovery.staticCall(f.vaultId), 'AlreadyFinalized');
+  await rejects(() => f.contract.connect(signers[5]).finalizeRecovery.staticCall(f.vaultId, 1), 'NoPendingRecovery');
+  await rejects(() => f.contract.connect(signers[4]).approveRecovery.staticCall(f.vaultId, 1), 'NoPendingRecovery');
+});
+
+test('owner check-in clears recipient and approvals, refreshes both deadlines and rejects stale requests', async () => {
+  const f = await createSuccession();
+  await advance(151);
+  await (await f.contract.connect(signers[5]).requestRecovery(f.vaultId)).wait();
+  await approvals(f, 1);
+  await advance(31);
+  for (const caller of [1, 2, 5, 6]) await rejects(() => f.contract.connect(signers[caller]).checkIn.staticCall(f.vaultId), 'Unauthorized');
+  const receipt = await (await f.contract.checkIn(f.vaultId)).wait();
+  assert.equal(events(f, receipt).find(event => event.name === 'RecoveryCancelled').args.requestId, 1n);
+  const v = await f.contract.getVault(f.vaultId);
+  assert.equal(Number(v.status), 0);
+  assert.equal(v.selectedBeneficiary, ZeroAddress);
+  assert.equal(v.approvalCount, 0n);
+  assert.equal(v.quorumAt, 0n);
+  assert.equal(v.requestId, 1n);
+  for (const guardian of f.addresses.slice(2, 5)) assert.equal(await f.contract.hasApproved(f.vaultId, 1, guardian), false);
+  await rejects(() => f.contract.connect(signers[5]).finalizeRecovery.staticCall(f.vaultId, 1), 'NoPendingRecovery');
+  await at(v.lastCheckIn + 59n);
+  await rejects(() => f.contract.connect(signers[1]).requestRecovery.staticCall(f.vaultId), 'OwnerStillActive');
+  await at(v.lastCheckIn + 60n);
+  await f.contract.connect(signers[1]).requestRecovery.staticCall(f.vaultId);
+  await rejects(() => f.contract.connect(signers[5]).requestRecovery.staticCall(f.vaultId), 'OwnerStillActive');
+  await at(v.lastCheckIn + 149n);
+  await rejects(() => f.contract.connect(signers[5]).requestRecovery.staticCall(f.vaultId), 'OwnerStillActive');
+  await at(v.lastCheckIn + 150n);
+  await (await f.contract.connect(signers[1]).requestRecovery(f.vaultId)).wait();
+  assert.equal((await f.contract.getVault(f.vaultId)).requestId, 2n);
+  assert.equal((await f.contract.getVault(f.vaultId)).selectedBeneficiary, f.addresses[1]);
+  await rejects(() => f.contract.connect(signers[2]).approveRecovery.staticCall(f.vaultId, 1), 'StaleRequest');
+  await rejects(() => f.contract.connect(signers[5]).finalizeRecovery.staticCall(f.vaultId, 1), 'StaleRequest');
+  await rejects(() => f.contract.connect(signers[5]).finalizeRecovery.staticCall(f.vaultId, 2), 'Unauthorized');
+  await rejects(() => f.contract.connect(signers[1]).finalizeRecovery.staticCall(f.vaultId, 2), 'QuorumNotMet');
+  await approvals(f, 2);
+  await advance(31);
+  await (await f.contract.connect(signers[1]).finalizeRecovery(f.vaultId, 2)).wait();
+  assert.equal(Number((await f.contract.getVault(f.vaultId)).status), 2);
 });

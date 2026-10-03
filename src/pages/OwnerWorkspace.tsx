@@ -27,6 +27,8 @@ import {
 } from 'lucide-react';
 import { Brand, VaultIllustration } from '../components/Brand';
 import UserMenu from '../components/UserMenu';
+import SuccessionGraph from '../components/SuccessionGraph';
+import { backupRecipient, isBeneficiary, selectedRecipient, policyDate } from '../lib/workspace-policy';
 import { useRouter } from '../lib/router';
 import type { Config, Actor, Vault, TimelineEvent, IdentityRecord } from '../lib/types';
 import { formatActorName, type UserAccount } from '../lib/auth';
@@ -91,10 +93,18 @@ export default function OwnerWorkspace({
 
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('All vaults');
+  const [graphVaultId, setGraphVaultId] = useState('');
+  const [actionError, setActionError] = useState('');
+
+  async function checkIn(vault: Vault) {
+    setActionError('');
+    try { await onCheckIn(vault); }
+    catch (error) { setActionError(error instanceof Error ? error.message : 'Unable to confirm check-in. Refresh and try again.'); }
+  }
 
   // Filter owned vaults
   const ownedVaults = vaults.filter(v => same(v.state.owner, currentUser.address));
-  const beneficiaryVaults = vaults.filter(v => same(v.state.beneficiary, currentUser.address));
+  const beneficiaryVaults = vaults.filter(v => isBeneficiary(v.state, currentUser.address));
   const guardianVaults = vaults.filter(v => v.state.guardians.some(g => same(g, currentUser.address)));
 
   // Determine subpage
@@ -124,6 +134,7 @@ export default function OwnerWorkspace({
         v.category.toLowerCase().includes(search.toLowerCase())) &&
       (filter === 'All vaults' || statusLabel(v) === filter)
   );
+  const graphVaults = graphVaultId ? ownedVaults.filter(v => v.state.id === graphVaultId) : ownedVaults;
 
   const ownedEvents = events.filter(
     e => ownedVaults.some(v => v.state.id === e.vaultId) || same(e.actor, currentUser.address)
@@ -166,12 +177,13 @@ export default function OwnerWorkspace({
           <span>
             <LockKeyhole size={13} /> AES-256
           </span>
+          <span>{backupRecipient(v.state) ? 'Optional backup' : 'Primary only'}</span>
         </div>
 
         <div className="card-bottom">
           <span className="beneficiary-avatar">{nameOf(v.state.beneficiary).slice(0, 1)}</span>
           <span>
-            For <strong>{nameOf(v.state.beneficiary)}</strong>
+            {v.state.status === 0 ? 'Primary: ' : 'Selected: '}<strong>{nameOf(v.state.status === 0 ? v.state.beneficiary : selectedRecipient(v.state))}</strong>
           </span>
           <ArrowUpRight size={17} />
         </div>
@@ -179,7 +191,7 @@ export default function OwnerWorkspace({
         {isPending && (
           <div className="card-pending-strip">
             <AlertTriangle size={13} />
-            <span>Challenge window open: Check in to cancel</span>
+            <span>{v.state.quorumAt ? 'Quorum reached' : 'Awaiting quorum'} · Check in to cancel</span>
           </div>
         )}
       </button>
@@ -321,6 +333,8 @@ export default function OwnerWorkspace({
         </header>
 
         <main>
+          {actionError && <div className="inline-error" role="alert">{actionError}</div>}
+          {offline && <div className="inline-error" role="status">Chain connection unavailable. Showing the last confirmed state; refresh before taking action.</div>}
           {/* Prominent Recovery Challenge Alert */}
           {activeChallenges.length > 0 && (
             <div className="critical-recovery-alert" role="alert">
@@ -331,16 +345,16 @@ export default function OwnerWorkspace({
                     RECOVERY CLAIM ACTIVE: {activeChallenges.length} vault(s) awaiting your response
                   </strong>
                   <p>
-                    Guardians have reached quorum to attest incapacity. The on-chain cancellation window
-                    is running. If you are here, submit a check-in now to immediately cancel the claim.
+                    A beneficiary opened a recovery request. Two guardian approvals start the full
+                    cancellation window. Check in before finalization to cancel the request and reset eligibility.
                   </p>
                 </div>
               </div>
               <button
                 type="button"
                 className="button primary alert-action-btn"
-                disabled={!!busy}
-                onClick={() => onCheckIn(activeChallenges[0])}
+                disabled={!!busy || offline}
+                onClick={() => checkIn(activeChallenges[0])}
               >
                 <Fingerprint size={16} />
                 I’m Here — Cancel Recovery
@@ -361,7 +375,7 @@ export default function OwnerWorkspace({
               </h1>
               <p>
                 {activeTab === 'checkins'
-                  ? 'Sign a zero-cost transaction to let guardians know you’re active and reset your recovery clock.'
+                  ? 'Sign a check-in transaction to reset both eligibility clocks and cancel any pending recovery.'
                   : activeTab === 'activity'
                   ? 'Audit transactions, guardian approvals, and check-in events written directly to Ethereum.'
                   : 'Assets encrypted with your client-side AES-256 keys and protected by guardian quorum.'}
@@ -426,6 +440,11 @@ export default function OwnerWorkspace({
               <span className={`stat-dot ${activeChallenges.length ? 'amber' : ''}`} />
             </div>
           </section>
+
+          {activeTab !== 'activity' && ownedVaults.length > 0 && <div className="owner-succession-panel">
+            {ownedVaults.length > 1 && <label className="succession-vault-picker">View succession policy<select value={graphVaultId} onChange={e => setGraphVaultId(e.target.value)}><option value="">All assets</option>{ownedVaults.map(v => <option key={v.state.id} value={v.state.id}>{v.label}</option>)}</select></label>}
+            <div className="owner-succession-graphs">{graphVaults.map(vault => <SuccessionGraph key={vault.state.id} vault={vault} time={time} block={block} offline={offline} nameOf={nameOf}/>)}</div>
+          </div>}
 
           {/* Main Subview: Vaults */}
           {activeTab === 'vaults' && (
@@ -531,7 +550,7 @@ export default function OwnerWorkspace({
                             <td>
                               {isChallenge ? (
                                 <span className="text-warning">
-                                  Challenge window active ({duration(Math.max(0, (v.state.quorumAt ?? 0) + v.state.challenge - time))})
+                                  {v.state.quorumAt ? `Cancellation deadline: ${policyDate(v.state.quorumAt + v.state.challenge)}` : 'Awaiting second guardian approval'}
                                 </span>
                               ) : elapsed ? (
                                 <span className="text-danger">Inactivity period elapsed</span>
@@ -543,8 +562,8 @@ export default function OwnerWorkspace({
                               <button
                                 type="button"
                                 className="button secondary small-button"
-                                disabled={!!busy || v.state.status === 2}
-                                onClick={() => onCheckIn(v)}
+                                disabled={!!busy || offline || v.state.status === 2}
+                                onClick={() => checkIn(v)}
                               >
                                 <Fingerprint size={14} />
                                 {isChallenge ? 'Cancel recovery' : 'Check in now'}

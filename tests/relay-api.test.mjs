@@ -56,7 +56,7 @@ function shareRelease(binding, guardian, requestId, ciphertext = envelope.cipher
 test('relay validates chain authorization and keeps acknowledged ciphertext through restart', { timeout: 90000 }, async t => {
   const chainPort = await freePort(), relayPort = await freePort();
   let chainOutput = '', relayOutput = '';
-  chain = spawn(process.execPath, [join(project, 'node_modules/hardhat/dist/src/cli.js'), 'node', '--hostname', '127.0.0.1', '--port', String(chainPort)], { cwd: project, stdio: ['ignore', 'pipe', 'pipe'] });
+  chain = spawn(process.execPath, [join(project, 'node_modules/hardhat/dist/src/cli.js'), 'node', '--hostname', '127.0.0.1', '--port', String(chainPort)], { cwd: project, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   for (const stream of [chain.stdout, chain.stderr]) stream.on('data', chunk => { chainOutput += chunk; });
   const rpcUrl = `http://127.0.0.1:${chainPort}`;
   await eventually(async () => {
@@ -65,9 +65,9 @@ test('relay validates chain authorization and keeps acknowledged ciphertext thro
   }, () => chainOutput);
   provider = new JsonRpcProvider(rpcUrl, undefined, { cacheTimeout: -1 });
   provider.pollingInterval = 50;
-  const signers = await Promise.all(Array.from({ length: 5 }, (_, i) => provider.getSigner(i)));
+  const signers = await Promise.all(Array.from({ length: 6 }, (_, i) => provider.getSigner(i)));
   const addresses = await Promise.all(signers.map(signer => signer.getAddress()));
-  const guardians = addresses.slice(2);
+  const guardians = addresses.slice(2, 5);
   const vaultId = id('relay-api-vault');
   const binding = { chainId: 31337, beneficiary: addresses[1], beneficiaryKeyHash: keyHash(publicKey), vaultId };
   const deployment = await new ContractFactory(artifact.abi, artifact.bytecode, signers[0]).deploy();
@@ -84,7 +84,7 @@ test('relay validates chain authorization and keeps acknowledged ciphertext thro
   const base = `http://127.0.0.1:${relayPort}`;
   const startRelay = async () => {
     relayOutput = '';
-    relay = spawn(process.execPath, [join(project, 'server/index.mjs')], { cwd: runtime, env: { ...process.env, RESEND_API_KEY: '', HEIRLOOM_RELAY_PORT: String(relayPort) }, stdio: ['ignore', 'pipe', 'pipe'] });
+    relay = spawn(process.execPath, [join(project, 'server/index.mjs')], { cwd: runtime, env: { ...process.env, DATABASE_URL: '', RESEND_API_KEY: '', HEIRLOOM_DEPLOYMENT_FILE: deploymentFile, HEIRLOOM_RELAY_PORT: String(relayPort) }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     for (const stream of [relay.stdout, relay.stderr]) stream.on('data', chunk => { relayOutput += chunk; });
     await eventually(async () => (await fetch(`${base}/api/health`)).ok, () => relayOutput);
   };
@@ -119,7 +119,8 @@ test('relay validates chain authorization and keeps acknowledged ciphertext thro
     assert.match(response.body.error, /signature/i);
     assert.deepEqual((await get('identities')).body, []);
     identity.signature = await signers[2].signMessage(identityMessage(config, addresses[2], publicKey));
-    assert.equal((await post('identities', identity)).status, 200);
+    const enrolled = await post('identities', identity);
+    assert.equal(enrolled.status, 200, enrolled.body.error);
   });
 
   const p = packageFor(binding, guardians);
@@ -218,6 +219,72 @@ test('relay validates chain authorization and keeps acknowledged ciphertext thro
       assert.equal((await post('packages', { package: otherPackage })).status, 400);
       assert.deepEqual((await get('packages')).body, [p]);
     } finally { rmSync(temporaryFile, { recursive: true }); }
+  });
+
+  await t.test('authorizes the selected backup and persists only its current finalized request', async () => {
+    const successionId = id('relay-api-succession-vault');
+    const backupPublicKey = { ...publicKey, n: 'B'.repeat(342) };
+    const successionBinding = { ...binding, vaultId: successionId, backupBeneficiary: addresses[5],
+      backupBeneficiaryKeyHash: keyHash(backupPublicKey), inactivity: 60, challenge: 30, backupWaitingDuration: 90 };
+    const successionPackage = { ...packageFor(successionBinding, guardians), version: 2, backupBeneficiaryPublicKey: backupPublicKey };
+    const policy = { beneficiary: addresses[1], backupBeneficiary: addresses[5], guardians, inactivity: 60, challenge: 30,
+      backupWaitingDuration: 90, beneficiaryKeyHash: binding.beneficiaryKeyHash, backupBeneficiaryKeyHash: keyHash(backupPublicKey) };
+    await (await deployment.registerSuccessionVault(successionId, policy, digest(successionPackage))).wait();
+    const uploaded = await post('packages', { package: successionPackage });
+    assert.equal(uploaded.status, 200, uploaded.body.error);
+    const v2Release = (guardian, requestId, recipient) => ({ version: 2, binding: successionBinding, guardian, requestId, recipient, envelope });
+    const expectRejected = async (value, message, signer = signers[2]) => {
+      const response = await post('releases', await signedRelease(value, signer));
+      assert.equal(response.status, 400);
+      assert.match(response.body.error, message);
+      assert.deepEqual((await get(`releases/${successionId}`)).body, []);
+    };
+
+    await advance(61);
+    await assert.rejects(() => deployment.connect(signers[5]).requestRecovery.staticCall(successionId), /OwnerStillActive/);
+    await (await deployment.connect(signers[1]).requestRecovery(successionId)).wait();
+    await (await deployment.connect(signers[2]).approveRecovery(successionId, 1)).wait();
+    await (await deployment.connect(signers[3]).approveRecovery(successionId, 1)).wait();
+    const cancelledPrimary = v2Release(addresses[2], 1, addresses[1]);
+    await expectRejected(cancelledPrimary, /finalized/i);
+    await (await deployment.checkIn(successionId)).wait();
+    assert.equal(await deployment.hasApproved(successionId, 1, addresses[2]), false);
+    await advance(61);
+    await assert.rejects(() => deployment.connect(signers[5]).requestRecovery.staticCall(successionId), /OwnerStillActive/);
+    await advance(90);
+    await (await deployment.connect(signers[5]).requestRecovery(successionId)).wait();
+    const selected = await deployment.getVault(successionId);
+    assert.equal(selected.requestId, 2n);
+    assert.equal(selected.selectedBeneficiary, addresses[5]);
+    await expectRejected(cancelledPrimary, /stale/i);
+    const backupRelease = v2Release(addresses[2], 2, addresses[5]);
+    await expectRejected(backupRelease, /finalized/i);
+    await (await deployment.connect(signers[2]).approveRecovery(successionId, 2)).wait();
+    await assert.rejects(() => deployment.connect(signers[5]).finalizeRecovery.staticCall(successionId, 2), /QuorumNotMet/);
+    await (await deployment.connect(signers[3]).approveRecovery(successionId, 2)).wait();
+    await expectRejected(backupRelease, /finalized/i);
+    await assert.rejects(() => deployment.connect(signers[5]).finalizeRecovery.staticCall(successionId, 2), /ChallengeActive/);
+    await advance(31);
+    await assert.rejects(() => deployment.connect(signers[1]).finalizeRecovery.staticCall(successionId, 2), /Unauthorized/);
+    await (await deployment.connect(signers[5]).finalizeRecovery(successionId, 2)).wait();
+    await expectRejected(cancelledPrimary, /stale/i);
+    await expectRejected(v2Release(addresses[2], 2, addresses[1]), /selected recipient/i);
+    await expectRejected(backupRelease, /signature/i, signers[3]);
+    await expectRejected(v2Release(addresses[4], 2, addresses[5]), /did not approve/i, signers[4]);
+
+    const signed = [await signedRelease(backupRelease), await signedRelease(v2Release(addresses[3], 2, addresses[5]), signers[3])];
+    for (const value of signed) {
+      const response = await post('releases', value);
+      assert.equal(response.status, 200, response.body.error);
+    }
+    assert.equal(await deployment.hasApproved(successionId, 2, addresses[4]), false);
+    assert.deepEqual((await get(`releases/${successionId}`)).body, signed);
+    await stop(relay); await startRelay();
+    const persistedPackage = (await get('packages')).body.find(value => value.binding.vaultId === successionId);
+    assert.deepEqual(persistedPackage, successionPackage);
+    const persisted = (await get(`releases/${successionId}`)).body;
+    assert.deepEqual(persisted, signed);
+    assert.ok(persisted.every(value => value.release.version === 2 && value.release.requestId === 2 && value.release.recipient === addresses[5]));
   });
 
   await t.test('does not disclose a test code when public email delivery is unavailable', async () => {

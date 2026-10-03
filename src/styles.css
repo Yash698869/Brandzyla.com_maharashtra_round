@@ -2743,3 +2743,45 @@
   color: #7b698c;
 }
 
+.owner-succession-panel { margin-bottom: 25px; }
+.owner-succession-graphs { display: grid; gap: 18px; }
+.succession-vault-picker { display: flex; align-items: center; gap: 12px; font-size: 11px; color: #626b5a; margin-bottom: 12px; }
+.succession-vault-picker select { border: 1px solid var(--border); border-radius: 7px; background: #fff; padding: 9px 12px; max-width: 100%; color: var(--ink); }
+.succession-graph { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 22px; }
+.succession-graph-heading { display: flex; align-items: center; gap: 9px; color: #786294; margin-bottom: 18px; }
+.succession-graph-heading h3 { font-family: Manrope, sans-serif; font-size: 15px; color: var(--ink); }
+.succession-path { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: minmax(0, 1fr) 70px minmax(0, 1fr); align-items: stretch; gap: 10px; }
+.succession-path.has-backup { grid-template-columns: minmax(0, 1fr) 70px minmax(0, 1fr) 70px minmax(0, 1fr); }
+.succession-node { min-width: 0; border: 1px solid #ddd3ea; border-radius: 9px; padding: 16px; background: #f8f5fc; display: flex; align-items: flex-start; flex-direction: column; gap: 8px; color: #79638f; }
+.succession-node.succession-asset { background: #f5f7f0; border-color: #dce4d4; color: #58734d; }
+.succession-node.succession-backup { background: #fcf7f0; border-color: #ecdfcd; color: #946b3b; }
+.succession-node > span { font-size: 10px; }
+.succession-node strong { color: var(--ink); font-size: 12px; overflow-wrap: anywhere; }
+.succession-node small { font-size: 11px; line-height: 1.55; color: #5d6258; }
+.succession-node time { font-size: 10px; line-height: 1.6; color: #6d7168; }
+.succession-edge { display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px; text-align: center; color: #8a789c; }
+.succession-edge span { font-size: 9px; line-height: 1.5; }
+.recovery-policy-status { border-top: 1px solid var(--border); padding: 12px 0; margin-top: 14px; text-align: left; }
+.recovery-policy-status p { font-size: 11px; line-height: 1.7; color: #68705f; margin-bottom: 5px; overflow-wrap: anywhere; }
+.recovery-policy-status p strong { font-weight: 600; color: #414b38; }
+.recovery-policy-status small { font-size: 10px; line-height: 1.6; color: #757c6d; display: block; }
+.succession-safeguard, .policy-form-note { color: #69755e; font-size: 11px; line-height: 1.75; }
+.policy-form-note { margin: -3px 0 16px; }
+.dev-actor-cards-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.dev-actor-card .actor-role-chip { white-space: normal; font-size: 8px; }
+.card-policy { flex-wrap: wrap; }
+@media (max-width: 1050px) {
+  .succession-path, .succession-path.has-backup { grid-template-columns: 1fr; gap: 8px; }
+  .succession-edge { flex-direction: row; gap: 10px; padding: 3px; }
+  .succession-edge svg { transform: rotate(90deg); }
+  .succession-node { padding: 14px; }
+  .dev-actor-cards-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 580px) {
+  .succession-graph { padding: 16px; }
+  .succession-vault-picker { align-items: stretch; flex-direction: column; gap: 7px; }
+  .succession-vault-picker select { width: 100%; }
+  .dev-actor-cards-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .create-form .form-row { grid-template-columns: 1fr; gap: 0; }
+}
+
