@@ -1,5 +1,6 @@
 node_modules/
 dist/
+/.presentation-build/
 artifacts/
 public/heirloom-contract.json
 .runtime/

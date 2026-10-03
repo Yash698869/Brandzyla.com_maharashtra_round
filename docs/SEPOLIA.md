@@ -8,19 +8,20 @@
 4. Connect the wallet, switch to Sepolia, and click **Deploy Heirloom contract**. Review and sign the contract-creation transaction in your wallet. The page estimates gas and checks test ETH balance before submitting.
 5. Once the receipt is confirmed, inspect the Etherscan transaction and download `heirloom-sepolia.json`. If confirmation times out, use **Check submitted deployment**; the page preserves the transaction hash across reload. Do not blindly deploy a duplicate.
 6. In another terminal, run `npm run sepolia:import`. The default file is `Downloads/heirloom-sepolia.json`; pass a full path after `--` for a different location. The command verifies the public chain, canonical deployment block, successful creation receipt, contract address, and compiled runtime hash.
-7. Run `npm run dev:sepolia`, then open `http://127.0.0.1:5174` in your wallet browser. The public app uses relay port 3002. The local backup remains on port 5173.
+7. Run `npm run dev:sepolia`, then open `http://127.0.0.1:5174` in your wallet browser. The public app uses relay port 3002. The local Hardhat fallback remains on port 5173.
+8. In a second terminal, run `npm run sepolia:check`. It reads the imported config and independently checks chain ID 11155111, the canonical deployment receipt, runtime code, relay, and the deployment served through the UI's `/api/config` proxy. It prints Etherscan contract and transaction links. This command does not sign or deploy.
 
 The default RPC is [PublicNode's Sepolia endpoint](https://ethereum.publicnode.com/?sepolia). An HTTPS Sepolia endpoint from another provider can be entered instead. A provider URL containing an API key is stored locally in the downloaded/runtime config; the relay does not send it to the public app.
 
 ## Enroll the five roles
 
-The owner, beneficiary, and three guardians must use five distinct wallet addresses. Each account needs to connect and sign **Connect & enroll wallet** in the public app before creating a vault. Enrollment creates a non-extractable browser encryption key and binds its public key with a wallet signature. A wallet's signing key is not the encryption key.
+The owner, beneficiary, and three guardians must use five distinct wallet addresses. Each role opens the public app in its own browser profile on this PC and connects its wallet. New enrollment creates an encrypted identity backup, downloads it, then requires reselecting the file and entering its passphrase before the wallet signs **Connect & enroll wallet**. Keep the backup file and passphrase separately. The stored browser encryption key is non-extractable; a wallet's signing key is not the encryption key. On a fresh profile, connect the same wallet and choose **Restore identity** with the backup file and passphrase.
 
-For a one-laptop rehearsal, use five testnet accounts in the wallet and reconnect after switching accounts. Keep all accounts in the same browser profile/origin used to enroll them. This demonstrates distinct on-chain roles, not separate-device custody. Each account that sends contract transactions needs some Sepolia ETH; enrollment and encrypted share delivery use signatures and do not charge chain gas.
+For a one-laptop rehearsal, use five testnet accounts in five separate browser profiles. Each profile has separate wallet state and IndexedDB. This demonstrates separated browser custody and distinct on-chain roles, not separate people or physical devices. The owner, beneficiary, and two acting guardians need Sepolia ETH for contract transactions; the third guardian can enroll without spending gas and remain unavailable. Enrollment and encrypted share delivery use signatures and do not charge chain gas.
 
 For a public live demo, choose **2 minutes · testnet rehearsal** for the missed check-in period and **1 minute · testnet rehearsal** for cancellation. These are real block-time waits enforced by the same contract. Defaults remain seven days / 24 hours. Public mode has no time skip. Wait for three confirmations after finalization before releasing shares.
 
-The local relay currently binds to loopback. Teammates on separate devices cannot use it until authenticated HTTPS hosting is added. Do not claim independent-device validation from a single-browser demonstration.
+The local relay currently binds to loopback. Teammates on separate devices cannot use it until authenticated HTTPS hosting and durable ciphertext storage are implemented and tested. The [separate-device design](SEPARATE-DEVICE.md) lists the required authorization and recovery checks. Do not claim independent-device validation from a single-browser demonstration.
 
 ## Optional CLI path
 

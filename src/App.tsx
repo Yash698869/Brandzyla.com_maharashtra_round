@@ -14,12 +14,16 @@ import {
   CircleAlert,
   ChevronRight,
   UsersRound,
+  FolderLock,
+  Network,
+  Wallet,
 } from 'lucide-react';
 import { hexlify, randomBytes, verifyMessage } from 'ethers';
 import { Brand } from './components/Brand';
 import Modal from './components/Modal';
 import CreateVault, { type CreateInput } from './components/CreateVault';
 import DevDemoDrawer from './components/DevDemoDrawer';
+import CustodyDialog from './components/CustodyDialog';
 import {
   getSessionUser,
   restoreSession,
@@ -36,18 +40,43 @@ import {
   chainTime,
   history,
   friendlyError,
+  connectWallet,
   transactionDetails,
   verifyDeployment,
   verifyReleaseFinality,
+  watchWalletChanges,
 } from './lib/chain';
 import {
   obtainIdentity,
   storedIdentity,
+  custodyRecord,
+  createBackedStoredIdentity,
+  verifyStoredBackup,
+  restoreStoredIdentity,
+  walletCustodyStatus,
   persistPending,
   pendingRegistrations,
   clearPending,
 } from './lib/identity';
-import { registerWithRecovery, type PendingRegistration } from './lib/registration';
+import {
+  custodyStep,
+  enrollmentMatches,
+  needsCustodyKey,
+  type CustodyAction,
+} from './lib/custody-flow';
+import type { IdentityBackup } from './lib/identity-backup';
+import {
+  registerWithRecovery,
+  reconcilePendingRegistration,
+  recoveryGuidance,
+  buildRecoveryKit,
+  parseRecoveryKit,
+  verifyRegisteredKit,
+  isVaultNotFound,
+  downloadRecoveryKit,
+  type PendingRegistration,
+  type RecoveryKit,
+} from './lib/registration';
 import { sealAsset, publicKeyHash, packageCommitment, releaseShare, recoverAsset } from './lib/crypto';
 import { identityMessage, releaseMessage } from '../shared/protocol.mjs';
 import type { Config, Actor, Vault, TimelineEvent, IdentityRecord, ProtectedPackage, AssetData } from './lib/types';
@@ -62,7 +91,6 @@ import AccessDenied from './pages/AccessDenied';
 
 const short = (address = '') => `${address.slice(0, 6)}…${address.slice(-4)}`;
 const same = (a = '', b = '') => a.toLowerCase() === b.toLowerCase();
-
 function duration(seconds: number) {
   if (seconds >= 86400) return `${Math.ceil(seconds / 86400)} days`;
   if (seconds >= 3600) return `${Math.ceil(seconds / 3600)} hours`;
@@ -104,18 +132,40 @@ function AppContent() {
   const [time, setTime] = useState(0);
   const [block, setBlock] = useState(0);
   const [releaseCount, setReleaseCount] = useState<Record<string, number>>({});
+  const [releaseGuardians, setReleaseGuardians] = useState<Record<string, string[]>>({});
   const [decrypted, setDecrypted] = useState<{ id: string; asset: AssetData }>();
   const [inspection, setInspection] = useState<any>();
   const importRef = useRef<HTMLInputElement>(null);
   const [offline, setOffline] = useState(false);
   const [pending, setPending] = useState<PendingRegistration[]>([]);
+  const [pendingMismatch, setPendingMismatch] = useState<string[]>([]);
   const [lastHash, setLastHash] = useState('');
+  const [custodyOpen, setCustodyOpen] = useState(false);
+  const [custodyLocal, setCustodyLocal] = useState<Awaited<ReturnType<typeof custodyRecord>>>();
+  const [custodyEnrolled, setCustodyEnrolled] = useState(false);
 
   const current = vaults.find(v => v.state.id === selected);
+  const deliveredGuardians = current ? releaseGuardians[current.state.id] ?? [] : [];
+  const guidance = current ? recoveryGuidance(current.state, actor?.address, time, deliveredGuardians) : undefined;
   const namespace = config ? `${config.chainId}:${config.contractAddress}:${config.deploymentId}` : '';
+  const custodyContext = config && actor ? { chainId: config.chainId, contractAddress: config.contractAddress, deploymentId: config.deploymentId, address: actor.address } : undefined;
+  const custodyStatus = config?.mode === 'public' && actor ? custodyStep(custodyEnrolled, custodyLocal) : undefined;
+  const custodyBlocked = config?.mode === 'public' && custodyStatus !== 'ready' && custodyStatus !== 'legacy';
+  const custodyActionBlocked = (action: CustodyAction) => custodyBlocked && needsCustodyKey(action);
   const metadataKey = (c: Config) => `heirloom-labels:${c.deploymentId}`;
+
   const notify = (message: string) => {
     setToast(message);
+  };
+  const exportKit = (kit: RecoveryKit, filename: string) => {
+    setError('');
+    setLastHash('');
+    try {
+      downloadRecoveryKit(kit, filename);
+      notify('Recovery kit download requested. Save the file; it does not contain browser custody keys.');
+    } catch (e) {
+      setError(friendlyError(e));
+    }
   };
   const nameOf = (address: string) =>
     currentUser && same(currentUser.address, address)
@@ -126,21 +176,33 @@ function AppContent() {
     await verifyDeployment(c);
     const ns = `${c.chainId}:${c.contractAddress}:${c.deploymentId}`;
     const preserved = await pendingRegistrations(ns);
+    const mismatches: string[] = [];
     for (const entry of preserved) {
       try {
-        const state = await getVault(c, entry.package.binding.vaultId);
-        if (state.commitment !== packageCommitment(entry.package)) continue;
-        await api.savePackage(entry.package);
-        const meta = JSON.parse(localStorage.getItem(metadataKey(c)) ?? '{}');
-        meta[state.id] = { label: entry.label, category: entry.category, createdAt: entry.createdAt };
-        localStorage.setItem(metadataKey(c), JSON.stringify(meta));
-        await clearPending(ns, state.id);
+        const result = await reconcilePendingRegistration(
+          entry,
+          () => getVault(c, entry.package.binding.vaultId),
+          () => api.savePackage(entry.package).then(() => {}),
+          async state => {
+            const meta = JSON.parse(localStorage.getItem(metadataKey(c)) ?? '{}');
+            meta[state.id] = { label: entry.label, category: entry.category, createdAt: entry.createdAt };
+            localStorage.setItem(metadataKey(c), JSON.stringify(meta));
+            await clearPending(ns, state.id);
+          }
+        );
+        if (result === 'mismatch') mismatches.push(entry.package.binding.vaultId);
       } catch {
-        /* preserved for recovery */
+        /* Keep failed relay writes or chain reads for a later retry. */
       }
     }
     setPending(await pendingRegistrations(ns));
-    const [packages, timeline, clock] = await Promise.all([api.packages(), history(c), chainTime()]);
+    setPendingMismatch(mismatches);
+    const [packages, timeline, clock, enrolled] = await Promise.all([
+      api.packages(),
+      history(c),
+      chainTime(),
+      api.identities(),
+    ]);
     const meta = JSON.parse(localStorage.getItem(metadataKey(c)) ?? '{}');
     const loaded = await Promise.all(
       packages.map(async p => {
@@ -163,16 +225,21 @@ function AppContent() {
     setEvents(timeline);
     setTime(clock.timestamp);
     setBlock(clock.blockNumber);
+    setIdentities(enrolled);
+    const deliveries: Record<string, string[]> = {};
     const counts: Record<string, number> = {};
     await Promise.all(
       loaded
         .filter((v): v is Vault => !!v && v.state.status === 2)
         .map(async v => {
-          counts[v.state.id] = (await api.releases(v.state.id)).filter(
+          const rels = (await api.releases(v.state.id)).filter(
             r => r.release.requestId === v.state.requestId
-          ).length;
+          );
+          deliveries[v.state.id] = [...new Set(rels.map(r => r.release.guardian.toLowerCase()))];
+          counts[v.state.id] = deliveries[v.state.id].length;
         })
     );
+    setReleaseGuardians(deliveries);
     setReleaseCount(counts);
     setOffline(false);
   }, []);
@@ -247,12 +314,22 @@ function AppContent() {
       live = false;
     };
   }, [refresh]);
-
   useEffect(() => {
     if (!config || boot || (config.mode === 'public' && !actor)) return;
     const timer = setInterval(() => refresh(config).catch(() => setOffline(true)), 6000);
     return () => clearInterval(timer);
   }, [config, boot, actor, refresh]);
+
+  useEffect(() => {
+    if (config?.mode !== 'public') return;
+    return watchWalletChanges(window.ethereum, () => {
+      setActor(undefined);
+      setDecrypted(undefined);
+      setOffline(true);
+      setLastHash('');
+      setError('Wallet account or network changed. Reconnect your wallet before continuing.');
+    });
+  }, [config?.mode]);
 
   useEffect(() => {
     if (!toast) return;
@@ -310,9 +387,17 @@ function AppContent() {
     if (busy) return;
     setBusy(label);
     setError('');
+    setLastHash('');
     try {
       await fn();
-      if (config) await refresh(config);
+      if (config) {
+        try {
+          await refresh(config);
+        } catch {
+          setOffline(true);
+          setError('The action completed, but the latest chain state could not be loaded. Retry the connection.');
+        }
+      }
     } catch (e) {
       setError(friendlyError(e));
     } finally {
@@ -384,6 +469,7 @@ function AppContent() {
   async function submitCreate(input: CreateInput) {
     setBusy('Encrypting & registering');
     setError('');
+    setLastHash('');
     try {
       const id = await create(input);
       setCreating(false);
@@ -391,6 +477,7 @@ function AppContent() {
       setSelected(id);
       notify('Your asset is encrypted. Recovery policy confirmed on-chain.');
     } catch (e) {
+      setPending(await pendingRegistrations(namespace));
       throw new Error(friendlyError(e));
     } finally {
       setBusy('');
@@ -541,19 +628,106 @@ function AppContent() {
     });
   }
 
+  async function enrollWallet() {
+    if (!config) return;
+    await run('Connecting wallet', async () => {
+      const address = await connectWallet(config);
+      const a: Actor = { address, name: 'Your connected wallet', role: 'owner', initials: 'YW' };
+      setActor(a);
+      const existing = await api.identities();
+      const enrolled = existing.find(i => same(i.address, address));
+      setIdentities(existing);
+      const record = await custodyRecord(namespace, address);
+      if (enrolled && record && !enrollmentMatches(record.identity.publicKey, enrolled.publicKey)) {
+        throw new Error('This browser holds a different encryption key than the one enrolled for this wallet. Keep the original browser or restore its matching backup.');
+      }
+      setCustodyLocal(record);
+      setCustodyEnrolled(!!enrolled);
+      const step = custodyStep(!!enrolled, record);
+      if (step === 'legacy' && !enrolled && record) {
+        const signer = await signerFor(config, address);
+        await api.enroll({
+          address,
+          publicKey: record.identity.publicKey,
+          signature: await signer.signMessage(identityMessage(config, address, record.identity.publicKey)),
+        });
+        setCustodyEnrolled(true);
+        setIdentities(await api.identities());
+      }
+      if (step === 'ready') notify('Wallet connected. Your backed custody key is ready.');
+      setCustodyOpen(true);
+    });
+  }
+
+  async function createCustody(passphrase: string): Promise<IdentityBackup> {
+    if (!custodyContext || !actor) throw new Error('Connect your wallet first');
+    const backup = await createBackedStoredIdentity(namespace, actor.address, passphrase, custodyContext);
+    setCustodyLocal(await custodyRecord(namespace, actor.address));
+    return backup;
+  }
+
+  async function enrollCustody() {
+    if (!config || !actor) throw new Error('Connect your wallet first');
+    const record = await custodyRecord(namespace, actor.address);
+    if (!record?.verified) throw new Error('Verify the downloaded identity backup first');
+    const signer = await signerFor(config, actor.address);
+    await api.enroll({
+      address: actor.address,
+      publicKey: record.identity.publicKey,
+      signature: await signer.signMessage(identityMessage(config, actor.address, record.identity.publicKey)),
+    });
+    setIdentities(await api.identities());
+    setCustodyLocal(record);
+    setCustodyEnrolled(true);
+    setCustodyOpen(false);
+    notify('Custody backup verified and wallet identity enrolled.');
+  }
+
+  async function verifyCustody(file: unknown, passphrase: string) {
+    if (!custodyContext || !actor) throw new Error('Connect your wallet first');
+    await verifyStoredBackup(namespace, actor.address, file, passphrase, custodyContext);
+    setCustodyLocal(await custodyRecord(namespace, actor.address));
+  }
+
+  async function restoreCustody(file: unknown, passphrase: string) {
+    if (!custodyContext || !actor) throw new Error('Connect your wallet first');
+    const enrolled = (await api.identities()).find(identity => same(identity.address, actor.address));
+    if (!enrolled) throw new Error('This wallet has no enrolled identity to restore');
+    await restoreStoredIdentity(namespace, actor.address, file, passphrase, custodyContext, publicKeyHash(enrolled.publicKey));
+    setCustodyLocal(await custodyRecord(namespace, actor.address));
+    setCustodyEnrolled(true);
+    setCustodyOpen(false);
+    notify('Identity restored in this browser. Your custody key matches the enrolled wallet.');
+  }
+
   async function importKit(file?: File) {
     if (!file || !config) return;
     await run('Verifying recovery kit', async () => {
       if (file.size > 15 * 1024 * 1024) throw new Error('Recovery kit is too large');
-      const kit = JSON.parse(await file.text());
-      if (kit.format !== 'heirloom-recovery-kit' || kit.version !== 1) {
-        throw new Error('Unsupported recovery kit');
+      let raw: unknown;
+      try {
+        raw = JSON.parse(await file.text());
+      } catch {
+        throw new Error('Recovery kit must be a valid JSON file');
       }
-      const p: ProtectedPackage = kit.package;
-      if (p.binding.chainId !== config.chainId || !same(p.binding.contract, config.contractAddress)) {
-        throw new Error('This recovery kit belongs to another chain or contract');
+      const kit = parseRecoveryKit(raw, config);
+      const p = kit.package;
+      let state;
+      try {
+        state = await getVault(config, p.binding.vaultId);
+      } catch (e) {
+        if (!isVaultNotFound(e)) throw e;
+        await persistPending(namespace, {
+          package: p,
+          label: kit.metadata?.label ?? 'Imported encrypted vault',
+          category: kit.metadata?.category ?? 'Encrypted asset',
+          createdAt: kit.metadata?.createdAt ?? Date.now(),
+          transactionHash: kit.transactionHash,
+        });
+        setPending(await pendingRegistrations(namespace));
+        notify('Registration is not on-chain yet. The encrypted kit is saved here and will be checked again after confirmation.');
+        return;
       }
-      const state = await getVault(config, p.binding.vaultId);
       if (
         packageCommitment(p) !== state.commitment ||
         publicKeyHash(p.beneficiaryPublicKey) !== state.beneficiaryKeyHash
@@ -561,10 +735,62 @@ function AppContent() {
         throw new Error('Recovery kit does not match its on-chain commitments');
       }
       await api.savePackage(p);
+      if (kit.metadata) {
+        const meta = JSON.parse(localStorage.getItem(metadataKey(config)) ?? '{}');
+        meta[state.id] = kit.metadata;
+        localStorage.setItem(metadataKey(config), JSON.stringify(meta));
+      }
       setSelected(state.id);
-      notify('Recovery kit verified against Ethereum and imported.');
+      notify('Encrypted package verified against the chain and imported. Custody keys remain on their original browser.');
     });
   }
+
+  async function exportRegisteredKit(vault: Vault) {
+    if (!config) return;
+    await run('Verifying recovery kit', async () => {
+      verifyRegisteredKit(await api.kit(vault.state.id), config, vault.state);
+      const anchor = document.createElement('a');
+      anchor.href = `/api/kits/${vault.state.id}`;
+      anchor.download = `heirloom-kit-${vault.state.id.slice(2, 10)}.json`;
+      anchor.style.display = 'none';
+      document.body.appendChild(anchor);
+      try {
+        anchor.click();
+      } finally {
+        anchor.remove();
+      }
+      notify('Verified recovery kit download requested. Confirm that your browser saved the file.');
+    });
+  }
+
+  const activeRecoveries = vaults.filter(v => v.state.status === 1).length;
+  const protectedCount = vaults.filter(v => v.state.status !== 2).length;
+  const guardians =
+    config?.mode === 'local'
+      ? config.actors.filter(a => a.role === 'guardian')
+      : identities
+          .filter(i => !same(i.address, actor?.address))
+          .map(i => ({ address: i.address, name: short(i.address), initials: 'GI', role: 'guardian' as const }));
+  const nextAddresses =
+    current && guidance
+      ? guidance.nextActor === 'beneficiary'
+        ? [current.state.beneficiary]
+        : current.state.status === 1
+        ? current.state.guardians.filter(g => !current.state.approved.some(a => same(a, g)))
+        : current.state.guardians.filter(
+            g => current.state.approved.some(a => same(a, g)) && !deliveredGuardians.some(a => same(a, g))
+          )
+      : [];
+  const actorRole =
+    current && actor
+      ? same(actor.address, current.state.owner)
+        ? 'owner'
+        : same(actor.address, current.state.beneficiary)
+        ? 'beneficiary'
+        : current.state.guardians.some(g => same(g, actor.address))
+        ? 'guardian'
+        : 'viewer'
+      : 'no actor';
 
   // 1. PUBLIC ROUTES
   if (path === '/' || path === '') {
@@ -816,6 +1042,62 @@ function AppContent() {
           }}
         />
 
+        {custodyOpen && config?.mode === 'public' && actor && custodyStatus && (
+          <CustodyDialog
+            key={`${actor.address}:${custodyStatus}`}
+            address={actor.address}
+            step={custodyStatus}
+            backup={custodyLocal?.backup}
+            onCreate={createCustody}
+            onVerify={verifyCustody}
+            onRestore={restoreCustody}
+            onEnroll={enrollCustody}
+            onClose={() => setCustodyOpen(false)}
+          />
+        )}
+
+        {pending.map(entry => (
+          <div className="error-banner pending-banner" role="status" key={entry.package.binding.vaultId}>
+            <FolderLock size={17} />
+            <span>
+              <strong>{entry.label}</strong>
+              {pendingMismatch.includes(entry.package.binding.vaultId)
+                ? ' does not match its on-chain commitment. Keep the kit for investigation; this package cannot be published.'
+                : ' has an unfinished registration. Its encrypted package is safe on this browser.'}
+              {entry.transactionHash && <> Transaction: {short(entry.transactionHash)}.</>}
+            </span>
+            <button
+              onClick={() =>
+                exportKit(
+                  buildRecoveryKit(
+                    entry.package,
+                    { label: entry.label, category: entry.category, createdAt: entry.createdAt },
+                    entry.transactionHash
+                  ),
+                  `heirloom-pending-${entry.package.binding.vaultId.slice(2, 10)}.json`
+                )
+              }
+            >
+              Export kit
+            </button>
+          </div>
+        ))}
+
+        {config?.mode === 'public' && actor && custodyBlocked && !custodyOpen && (
+          <div className="error-banner" role="status">
+            <KeyRound size={17} />
+            <span>This wallet needs its verified browser custody key before encryption and decryption actions.</span>
+            <button onClick={() => setCustodyOpen(true)}>Set up custody</button>
+          </div>
+        )}
+        {config?.mode === 'public' && actor && custodyStatus === 'legacy' && !custodyOpen && (
+          <div className="error-banner" role="status">
+            <KeyRound size={17} />
+            <span>This older browser identity has no portable backup.</span>
+            <button onClick={() => setCustodyOpen(true)}>Learn why</button>
+          </div>
+        )}
+
         {creating && config && actor && (
           <CreateVault
             config={config}
@@ -956,21 +1238,20 @@ function AppContent() {
 
                 <button
                   className="text-button kit-button"
-                  onClick={() =>
-                    download(
-                      { format: 'heirloom-recovery-kit', version: 1, package: current.package },
-                      `heirloom-kit-${current.state.id.slice(2, 10)}.json`
-                    )
-                  }
+                  disabled={!!busy || offline}
+                  onClick={() => exportRegisteredKit(current)}
                 >
                   <Download size={15} />
                   Export encrypted recovery kit
                 </button>
+                <p className="kit-note">
+                  The kit contains encrypted asset data. Its label and browser custody keys stay on this device.
+                </p>
               </div>
 
               <div className="recovery-panel">
                 <span className="eyebrow">RECOVERY SAFEGUARDS</span>
-                <h3>Contract Safeguards</h3>
+                <h3>Every condition matters.</h3>
                 <div className="recovery-steps">
                   {[
                     {
@@ -998,12 +1279,12 @@ function AppContent() {
                         time >= current.state.quorumAt + current.state.challenge,
                     },
                     {
-                      label: 'Beneficiary authorization',
+                      label: 'Encrypted share delivery',
                       detail:
                         current.state.status === 2
-                          ? `${releaseCount[current.state.id] ?? 0} encrypted shares delivered`
-                          : 'Owner can intervene until finalization',
-                      done: current.state.status === 2,
+                          ? `${deliveredGuardians.length} of 2 shares delivered`
+                          : 'Starts after finalization',
+                      done: deliveredGuardians.length >= 2,
                     },
                   ].map((step, i) => (
                     <div className={`recovery-step ${step.done ? 'done' : ''}`} key={step.label}>
@@ -1016,6 +1297,23 @@ function AppContent() {
                   ))}
                 </div>
 
+                {guidance && (
+                  <div className="recovery-next" role="status">
+                    <span>Next recovery step</span>
+                    <strong>{guidance.nextAction}</strong>
+                    <small>
+                      {nextAddresses.map(nameOf).join(', ')} · {guidance.nextActor}
+                      {guidance.waitSeconds
+                        ? ` · ${duration(guidance.waitSeconds)} remaining`
+                        : guidance.approvalsNeeded
+                        ? ` · ${guidance.approvalsNeeded} more approval${guidance.approvalsNeeded === 1 ? '' : 's'}`
+                        : guidance.sharesNeeded
+                        ? ` · ${guidance.sharesNeeded} more share${guidance.sharesNeeded === 1 ? '' : 's'}`
+                        : ''}
+                    </small>
+                  </div>
+                )}
+
                 <div className="wallet-permission-status-box">
                   <span>Connected wallet:</span>
                   <code>{short(currentUser?.address ?? '')}</code>
@@ -1027,7 +1325,7 @@ function AppContent() {
                     <>
                       <button
                         className="button primary full"
-                        disabled={!!busy}
+                        disabled={!!busy || offline || custodyActionBlocked('checkIn')}
                         onClick={() => action(current, 'checkIn')}
                       >
                         <Fingerprint size={17} />
@@ -1052,7 +1350,13 @@ function AppContent() {
                     {current.state.status === 0 && (
                       <button
                         className="button primary full"
-                        disabled={!!busy || time < current.state.lastCheckIn + current.state.inactivity}
+                        disabled={
+                          !!busy ||
+                          offline ||
+                          custodyActionBlocked('requestRecovery') ||
+                          (guidance && guidance.action !== 'requestRecovery') ||
+                          time < current.state.lastCheckIn + current.state.inactivity
+                        }
                         onClick={() => action(current, 'requestRecovery')}
                       >
                         <ShieldCheck size={17} />
@@ -1066,6 +1370,9 @@ function AppContent() {
                         className="button primary full"
                         disabled={
                           !!busy ||
+                          offline ||
+                          custodyActionBlocked('finalizeRecovery') ||
+                          (guidance && guidance.action !== 'finalizeRecovery') ||
                           current.state.approvalCount < 2 ||
                           !current.state.quorumAt ||
                           time < current.state.quorumAt + current.state.challenge
@@ -1077,7 +1384,16 @@ function AppContent() {
                       </button>
                     )}
                     {current.state.status === 2 && (
-                      <button className="button primary full" disabled={!!busy} onClick={() => decrypt(current)}>
+                      <button
+                        className="button primary full"
+                        disabled={
+                          !!busy ||
+                          offline ||
+                          custodyActionBlocked('decrypt') ||
+                          (guidance && guidance.action !== 'decrypt')
+                        }
+                        onClick={() => decrypt(current)}
+                      >
                         <LockKeyhole size={17} />
                         Decrypt inherited asset
                       </button>
@@ -1102,7 +1418,11 @@ function AppContent() {
                         <button
                           className="button primary full"
                           disabled={
-                            !!busy || current.state.approved.some(g => same(g, currentUser.address))
+                            !!busy ||
+                            offline ||
+                            custodyActionBlocked('approveRecovery') ||
+                            (guidance && guidance.action !== 'approveRecovery') ||
+                            current.state.approved.some(g => same(g, currentUser.address))
                           }
                           onClick={() => action(current, 'approveRecovery')}
                         >
@@ -1117,12 +1437,19 @@ function AppContent() {
                       <button
                         className="button primary full"
                         disabled={
-                          !!busy || !current.state.approved.some(g => same(g, currentUser.address))
+                          !!busy ||
+                          offline ||
+                          custodyActionBlocked('release') ||
+                          (guidance && guidance.action !== 'release') ||
+                          !current.state.approved.some(g => same(g, currentUser.address)) ||
+                          deliveredGuardians.some(g => same(g, currentUser.address))
                         }
                         onClick={() => release(current)}
                       >
                         <KeyRound size={17} />
-                        Release encrypted share
+                        {deliveredGuardians.some(g => same(g, currentUser.address))
+                          ? 'Share delivered'
+                          : 'Release encrypted share'}
                       </button>
                     )}
                   </>

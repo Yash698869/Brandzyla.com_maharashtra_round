@@ -1,0 +1,9 @@
+.custody-dialog{display:grid;gap:16px;color:#66745c;font-size:12px;line-height:1.7}
+.custody-dialog p{margin:0}
+.custody-dialog strong{color:#2b3b2c}
+.custody-dialog label{display:grid;gap:7px;font-size:11px;font-weight:700;color:#45543f}
+.custody-dialog input{width:100%;padding:12px;border:1px solid #d9dfd4;border-radius:8px;background:#fff;color:#263122;font:inherit}
+.custody-dialog input:focus{outline:2px solid #a9bd96;outline-offset:1px}
+.custody-dialog input[type=file]{font-weight:400;line-height:1.3}
+.custody-dialog .button{font-size:11px;min-height:40px}
+.custody-dialog small{font-size:10px;color:#788171;line-height:1.7}

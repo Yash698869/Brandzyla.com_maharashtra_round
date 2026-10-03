@@ -19,8 +19,13 @@ async function verifyDeployment() {
 }
 await verifyDeployment();
 const file = `.runtime/relay-${config.deploymentId.slice(2, 18)}.json`;
-const data = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { identities: {}, packages: {}, releases: {} };
-function save() { mkdirSync('.runtime', { recursive: true }); writeFileSync(`${file}.tmp`, JSON.stringify(data)); renameSync(`${file}.tmp`, file); }
+let data = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { identities: {}, packages: {}, releases: {} };
+function save(next) {
+  mkdirSync('.runtime', { recursive: true });
+  writeFileSync(`${file}.tmp`, JSON.stringify(next));
+  renameSync(`${file}.tmp`, file);
+  data = next;
+}
 const same = (a, b) => a.toLowerCase() === b.toLowerCase();
 const route = fn => async (req, res, next) => { try { await fn(req, res); } catch (e) { next(e); } };
 function deployment(p) { if (p.binding.chainId !== config.chainId || !same(p.binding.contract, config.contractAddress)) throw new Error('Wrong chain or contract'); }
@@ -47,16 +52,26 @@ app.post('/api/identities', route(async (req, res) => {
   const identity = req.body; const address = identity.address?.toLowerCase();
   validateIdentity(identity, data.identities[address]);
   validSignature(identityMessage(config, identity.address, identity.publicKey), identity.signature, identity.address);
-  data.identities[address] = identity; save(); res.json({ ok: true });
+  save({ ...data, identities: { ...data.identities, [address]: identity } }); res.json({ ok: true });
 }));
 app.get('/api/packages', (_req, res) => res.json(Object.values(data.packages)));
+app.get('/api/kits/:vaultId', route(async (req, res) => {
+  const { vaultId } = req.params;
+  if (!/^0x[0-9a-fA-F]{64}$/.test(vaultId)) throw new Error('Invalid vault identifier');
+  const p = data.packages[vaultId];
+  if (!p) return res.status(404).json({ error: 'Encrypted package missing' });
+  deployment(p);
+  validateRegistration(p, await vaultState(vaultId));
+  res.attachment(`heirloom-kit-${vaultId.slice(2, 10)}.json`);
+  res.json({ format: 'heirloom-recovery-kit', version: 1, package: p });
+}));
 app.post('/api/packages', route(async (req, res) => {
   const p = req.body.package; validatePackageShape(p); deployment(p);
   if (req.body.format) validateRecoveryKit(req.body, config);
   const v = await vaultState(p.binding.vaultId); validateRegistration(p, v);
   const previous = data.packages[p.binding.vaultId];
   if (previous && digest(previous) !== digest(p)) throw new Error('Vault packages are immutable');
-  data.packages[p.binding.vaultId] = p; save(); res.json({ ok: true });
+  save({ ...data, packages: { ...data.packages, [p.binding.vaultId]: p } }); res.json({ ok: true });
 }));
 app.get('/api/releases/:vaultId', route(async (req, res) => {
   if (!/^0x[0-9a-fA-F]{64}$/.test(req.params.vaultId)) throw new Error('Invalid vault identifier');
@@ -75,8 +90,8 @@ app.post('/api/releases', route(async (req, res) => {
   const entries = data.releases[p.binding.vaultId] ?? [];
   const previous = entries.find(e => same(e.release.guardian, release.guardian) && e.release.requestId === release.requestId);
   if (previous && digest(previous.release) !== digest(release)) throw new Error('This guardian already released a share for this request');
-  if (!previous) entries.push({ release, signature });
-  data.releases[p.binding.vaultId] = entries; save(); res.json({ ok: true });
+  if (!previous) save({ ...data, releases: { ...data.releases, [p.binding.vaultId]: [...entries, { release, signature }] } });
+  res.json({ ok: true });
 }));
 app.post('/api/clock', route(async (req, res) => {
   if (config.mode !== 'local' || config.chainId !== 31337 || Number(await provider.send('eth_chainId', [])) !== 31337) throw new Error('Demo clock is available only on the local development chain');

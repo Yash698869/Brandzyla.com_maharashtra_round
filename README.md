@@ -4,6 +4,8 @@
 
 Heirloom is a hackathon prototype for digital inheritance. An actual Solidity contract authorizes recovery after a missed owner check-in, two independent guardian attestations, and a full owner cancellation window. The encrypted asset key is split into three shares; two guardians can deliver shares encrypted for the beneficiary, who decrypts locally.
 
+[First-round judging slides](deliverables/Heirloom_First_Round.pptx) · [Three-minute live walkthrough](docs/DEMO.md)
+
 ## A look inside
 
 Captured during a local EVM rehearsal. The vault dashboard shows the live demo state; in the second capture, the beneficiary decrypted the exact original letter after two guardians released encrypted shares.
@@ -29,6 +31,8 @@ The local chain is ephemeral. Stopping its process loses chain state. Browser ke
 
 Read the [three-minute judging walkthrough](docs/DEMO.md) and [public deployment instructions](docs/SEPOLIA.md).
 
+Separate-device custody and portable identity backup are design work, not current demo capabilities. See the [hosted relay design](docs/SEPARATE-DEVICE.md) and [identity backup design](docs/IDENTITY-BACKUP.md).
+
 ## Public blockchain proof
 
 Open [Deploy Heirloom](http://127.0.0.1:5173/deploy.html) **in the browser containing your Ethereum wallet**. Get Sepolia test ETH, connect, and sign the deployment. The page validates the compiled runtime against the receipt and provides an Etherscan transaction link. Download `heirloom-sepolia.json`, then run:
@@ -36,11 +40,14 @@ Open [Deploy Heirloom](http://127.0.0.1:5173/deploy.html) **in the browser conta
 ```powershell
 npm run sepolia:import
 npm run dev:sepolia
+npm run sepolia:check
 ```
 
 The import command defaults to your Windows Downloads folder. For another location, use `npm run sepolia:import -- "C:\full\path\heirloom-sepolia.json"`. It independently checks the RPC network, deployment receipt, block hash, and compiled runtime before accepting the config.
 
 The public app opens at [port 5174](http://127.0.0.1:5174), with a separate relay on port 3002. The local rehearsal stays running at port 5173. No demo accounts or clock fast-forwarding exist in public mode. Public recovery releases require three confirmations. Public deployment is pending until a funded wallet signs it; a local EVM is not a decentralized public network.
+
+New public-mode wallet enrollments create a passphrase-encrypted **identity backup** file. Download it, reselect it to verify restoration, then sign enrollment. To restore in another browser profile, connect the same wallet address and choose **Restore identity** with that file and passphrase. Each of the five roles can use a separate browser profile on the same PC; that separates browser key storage, but does not prove independent devices or people. The asset recovery kit is a different file and does not contain the browser identity key.
 
 ## Three Distinct Workspaces & Role-Based Routing
 
@@ -81,6 +88,7 @@ Heirloom provides three tailored, distinct workspaces for the three kinds of peo
 - **Standard User Menu**: Located in the top-right header, displaying full name, email address, role badge, connected wallet address with copy button, and **Sign Out**. The menu contains **no "Switch Profile / Account"** or fake switching controls.
 - **Development Demo Drawer**: On local chains (`31337`), an explicitly labelled **DEVELOPMENT DEMO** bottom drawer is available for evaluators to switch between the 5 pre-funded Hardhat accounts (Alex Morgan, Sam Morgan, Maya Chen, James Wilson, Priya Shah) and immediately inspect their respective workspaces. This evaluation drawer is **absent from public testnet and production modes**.
 
+
 ## What is implemented
 
 - Public landing page at `/` with clear human explanation, protocol diagrams, and prominent CTAs.
@@ -93,7 +101,7 @@ Heirloom provides three tailored, distinct workspaces for the three kinds of peo
 - Wallet-signed identity enrollment and share delivery. Deployment, vault, beneficiary key, and current request are verified before release/decryption.
 - Immutable encrypted package commitments, event history, real transaction receipts, searchable vaults, and responsive UI.
 - Encrypted recovery-kit export/import; unfinished registration packages are saved in IndexedDB before broadcasting and reconciled after reload.
-- Non-extractable browser identity keys, atomic custody creation across tabs, stale-network indicators, and bounded transaction waits.
+- Non-extractable browser identity keys, passphrase-encrypted backup/restore for newly enrolled public identities, atomic custody creation across tabs, stale-network indicators, and bounded transaction waits.
 
 ## Architecture
 
@@ -108,7 +116,7 @@ flowchart LR
   B --> D[Reconstruct key and decrypt locally]
 ```
 
-`contracts/Heirloom.sol` is the authorization state machine. `src/lib/crypto.ts` handles encryption and recovery. `server/index.mjs` stores ciphertext and verifies signed writes against contract state. `src/lib/chain.ts` checks deployment fingerprints and canonical finalization receipts. `shared/` contains the protocol domains and shared validation.
+`contracts/Heirloom.sol` is the authorization state machine. `src/lib/crypto.ts` handles encryption and recovery. `server/index.mjs` stores ciphertext, verifies signed identity enrollments and share releases, and checks package writes against contract state. `src/lib/chain.ts` checks deployment fingerprints and canonical finalization receipts. `shared/` contains the protocol domains and shared validation.
 
 ## Verification
 
@@ -123,9 +131,9 @@ The contract tests run transactions against a separate EVM on port 18545. Crypto
 
 The relay and one guardian cannot reconstruct the key from the ciphertext they hold. **Two colluding guardians can combine their shares privately and bypass the off-chain release policy.** Contract authorization does not cryptographically prevent a sufficient custody quorum from colluding. Wallet signatures attest to guardian decisions; they do not establish a person's real-world death or incapacity.
 
-The local actor switcher operates all roles on one machine and is clearly labelled as a demonstration. It does not prove independent custody. For separate-device deployment, the relay needs authenticated HTTPS hosting; this prototype binds its API to loopback. The browser UI needs localhost or HTTPS for Web Crypto.
+The local actor switcher operates all roles on one machine and is clearly labelled as a demonstration. It does not prove independent custody. The relay and UI bind to loopback, and the relay's local `Origin` allowlist is not wallet authentication. Separate-device custody needs authenticated HTTPS access, role-scoped relay reads and writes, durable ciphertext storage with tested restore, and an end-to-end multi-device test. The browser UI needs localhost or HTTPS for Web Crypto.
 
-Browser encryption keys currently cannot be exported. An encrypted recovery kit preserves the asset ciphertext and guardian envelopes, **not private identity keys**. Clearing browser storage or losing required guardian/beneficiary devices can permanently block recovery. Encrypted identity backup, key rotation, and guardian replacement remain future work.
+New public identities briefly export their private key during creation to encrypt a portable backup, then store a non-extractable key in IndexedDB. The backup stays on the user's device; a weak passphrase exposes it to offline guessing, and losing both the file and browser storage still blocks recovery. Existing Hardhat identities were created as non-extractable keys before this feature and **cannot be backed up retroactively**. Their vaults remain usable in the original browser. An asset recovery kit preserves ciphertext and guardian envelopes, **not private identity keys**. Key rotation and guardian replacement remain future work.
 
 Addresses, timing, and events are public metadata. Vault labels/categories are stored only in local browser storage and are not encrypted. Each registered policy is fixed; create a new vault to change it. Finalization is irreversible; a cancellation race is decided by transaction ordering. Three confirmations reduce reorganization risk and do not eliminate it. RPC failure prevents safe release rather than bypassing authorization.
 

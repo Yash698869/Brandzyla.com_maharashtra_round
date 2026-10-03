@@ -3,9 +3,23 @@ import { validateDeployment, validateFinality } from '../../shared/chain-safety.
 import { getStoredPrivateKey } from './auth';
 import type { Config, VaultState, TimelineEvent } from './types';
 
-declare global { interface Window { ethereum?: Eip1193Provider & { on?: (event: string, fn: (...args: any[]) => void) => void } } }
+interface WalletEventSource {
+  on?: (event: string, fn: (...args: any[]) => void) => void;
+  removeListener?: (event: string, fn: (...args: any[]) => void) => void;
+}
+declare global { interface Window { ethereum?: Eip1193Provider & WalletEventSource } }
 let readProvider: JsonRpcProvider | BrowserProvider;
 let walletProvider: BrowserProvider | undefined;
+export function watchWalletChanges(provider: WalletEventSource | undefined, onChange: () => void): () => void {
+  if (!provider?.on) return () => {};
+  const changed = () => onChange();
+  provider.on('accountsChanged', changed);
+  provider.on('chainChanged', changed);
+  return () => {
+    provider.removeListener?.('accountsChanged', changed);
+    provider.removeListener?.('chainChanged', changed);
+  };
+}
 export function initializeChain(config: Config) {
   if (config.mode === 'local') readProvider = new JsonRpcProvider(config.rpcUrl, config.chainId, { staticNetwork: true, cacheTimeout: -1 });
   else { if (!window.ethereum) throw new Error('Install an Ethereum wallet to use the Sepolia deployment'); walletProvider = new BrowserProvider(window.ethereum); readProvider = walletProvider; }
