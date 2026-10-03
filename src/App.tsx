@@ -18,7 +18,7 @@ import {
   Network,
   Wallet,
 } from 'lucide-react';
-import { hexlify, randomBytes, verifyMessage } from 'ethers';
+import { hexlify, randomBytes, verifyMessage, ZeroAddress, ZeroHash } from 'ethers';
 import { Brand } from './components/Brand';
 import Modal from './components/Modal';
 import CreateVault, { type CreateInput } from './components/CreateVault';
@@ -79,6 +79,7 @@ import {
   type RecoveryKit,
 } from './lib/registration';
 import { sealAsset, publicKeyHash, packageCommitment, releaseShare, recoverAsset } from './lib/crypto';
+import { isBeneficiary, selectedRecipient, beneficiaryDeadline, canRequest, canFinalize } from './lib/workspace-policy';
 import { identityMessage, releaseMessage } from '../shared/protocol.mjs';
 import type { Config, Actor, Vault, TimelineEvent, IdentityRecord, ProtectedPackage, AssetData } from './lib/types';
 import { RouterProvider, useRouter } from './lib/router';
@@ -201,17 +202,17 @@ function AppContent() {
     }
     setPending(await pendingRegistrations(ns));
     setPendingMismatch(mismatches);
-    const [packages, timeline, clock, enrolled] = await Promise.all([
+    const clock = await chainTime(c);
+    const [packages, timeline, enrolled] = await Promise.all([
       api.packages(),
-      history(c),
-      chainTime(),
+      history(c, clock.blockNumber),
       api.identities(),
     ]);
     const meta = JSON.parse(localStorage.getItem(metadataKey(c)) ?? '{}');
     const loaded = await Promise.all(
       packages.map(async p => {
         try {
-          const state = await getVault(c, p.binding.vaultId);
+          const state = await getVault(c, p.binding.vaultId, clock.blockNumber);
           if (state.commitment !== packageCommitment(p)) throw new Error('Package commitment mismatch');
           return {
             package: p,
@@ -422,8 +423,11 @@ function AppContent() {
         throw new Error('Identity signature verification failed');
       }
     }
+    if (!c.abi.some(entry => entry.type === 'function' && entry.name === 'registerSuccessionVault')) throw new Error('This deployment supports version-1 vaults only. Redeploy the Succession Graph contract to create version-2 vaults.');
     const beneficiary = registry.find(i => same(i.address, input.beneficiary));
     if (!beneficiary) throw new Error('The beneficiary must enroll an encryption identity first');
+    const backup = input.backupBeneficiary ? registry.find(i => same(i.address, input.backupBeneficiary)) : undefined;
+    if (input.backupBeneficiary && !backup) throw new Error('The backup beneficiary must enroll an encryption identity first');
     const guardians = input.guardians.map(address => {
       const identity = registry.find(i => same(i.address, address));
       if (!identity) throw new Error('Every guardian must enroll an encryption identity first');
@@ -440,8 +444,14 @@ function AppContent() {
         vaultId: id,
         beneficiary: input.beneficiary.toLowerCase(),
         beneficiaryKeyHash: publicKeyHash(beneficiary.publicKey),
+        backupBeneficiary: backup?.address.toLowerCase() ?? ZeroAddress,
+        backupBeneficiaryKeyHash: backup ? publicKeyHash(backup.publicKey) : ZeroHash,
+        inactivity: input.inactivity,
+        challenge: input.challenge,
+        backupWaitingDuration: backup ? input.backupWaitingDuration : 0,
       },
-      beneficiary.publicKey
+      beneficiary.publicKey,
+      backup?.publicKey
     );
     const contract = await writableContract(c, owner.address);
     const ns = `${c.chainId}:${c.contractAddress}:${c.deploymentId}`;
@@ -453,14 +463,13 @@ function AppContent() {
         if (record.transactionHash) setLastHash(record.transactionHash);
       },
       async () =>
-        contract.registerVault(
+        contract.registerSuccessionVault(
           id,
-          input.beneficiary,
-          input.guardians,
-          input.inactivity,
-          input.challenge,
-          packageCommitment(p),
-          p.binding.beneficiaryKeyHash
+          { beneficiary: input.beneficiary, backupBeneficiary: backup?.address ?? ZeroAddress,
+            guardians: input.guardians, inactivity: input.inactivity, challenge: input.challenge,
+            backupWaitingDuration: backup ? input.backupWaitingDuration : 0,
+            beneficiaryKeyHash: p.binding.beneficiaryKeyHash, backupBeneficiaryKeyHash: p.binding.backupBeneficiaryKeyHash },
+          packageCommitment(p)
         ),
       () => api.savePackage(p).then(() => {}),
       () => clearPending(ns, id)
@@ -522,6 +531,8 @@ function AppContent() {
             bytes: new TextEncoder().encode(s.text),
             mime: 'text/plain',
             beneficiary,
+            backupBeneficiary: c.actors.filter(a => a.role === 'beneficiary')[1]?.address ?? '',
+            backupWaitingDuration: 60,
             guardians,
             inactivity: 60,
             challenge: 30,
@@ -542,8 +553,9 @@ function AppContent() {
       if (method === 'checkIn' && !same(actor.address, vault.state.owner)) {
         throw new Error(`Wallet mismatch: Connected wallet ${short(actor.address)} is not the vault owner (${short(vault.state.owner)}).`);
       }
-      if ((method === 'requestRecovery' || method === 'finalizeRecovery') && !same(actor.address, vault.state.beneficiary)) {
-        throw new Error(`Wallet mismatch: Connected wallet ${short(actor.address)} is not the designated beneficiary (${short(vault.state.beneficiary)}).`);
+      if ((method === 'requestRecovery' && !isBeneficiary(vault.state, actor.address)) ||
+          (method === 'finalizeRecovery' && !same(actor.address, selectedRecipient(vault.state)))) {
+        throw new Error('Wallet mismatch: only a configured beneficiary can request, and only the selected request beneficiary can finalize.');
       }
       if (method === 'approveRecovery' && !vault.state.guardians.some(g => same(g, actor.address))) {
         throw new Error(`Wallet mismatch: Connected wallet ${short(actor.address)} is not a configured guardian.`);
@@ -577,6 +589,10 @@ function AppContent() {
         throw new Error('Finalize recovery and approve with this guardian before releasing its share');
       }
       await verifyReleaseFinality(config, state.id, state.requestId);
+      verifyRegisteredKit(buildRecoveryKit(vault.package), config, state);
+      const recipient = selectedRecipient(state);
+      const recipientKey = same(recipient, state.beneficiary) ? vault.package.beneficiaryPublicKey : vault.package.backupBeneficiaryPublicKey;
+      if (!recipientKey || publicKeyHash(recipientKey) !== (same(recipient, state.beneficiary) ? state.beneficiaryKeyHash : state.backupBeneficiaryKeyHash)) throw new Error('Selected beneficiary key commitment mismatch');
       const identity = await storedIdentity(namespace, actor.address);
       if (!identity) {
         throw new Error('This guardian encryption key is on its original browser. Use that device.');
@@ -585,8 +601,9 @@ function AppContent() {
         vault.package,
         actor.address,
         identity,
-        vault.package.beneficiaryPublicKey,
-        state.requestId
+        recipientKey,
+        state.requestId,
+        recipient
       );
       const signer = await signerFor(config, actor.address);
       await api.release(r, await signer.signMessage(releaseMessage(r)));
@@ -598,19 +615,21 @@ function AppContent() {
     if (!vault || !actor || !config) return;
 
     await run('Verifying & decrypting', async () => {
-      if (!same(actor.address, vault.state.beneficiary)) {
-        throw new Error(`Wallet mismatch: Connected wallet ${short(actor.address)} is not the designated beneficiary (${short(vault.state.beneficiary)}).`);
+      if (!same(actor.address, selectedRecipient(vault.state))) {
+        throw new Error('Wallet mismatch: only the selected request beneficiary can decrypt.');
       }
       const state = await getVault(config, vault.state.id);
-      if (state.status !== 2 || !same(state.beneficiary, actor.address)) {
-        throw new Error('Only the designated beneficiary can decrypt after finalization');
+      if (state.status !== 2 || !same(selectedRecipient(state), actor.address)) {
+        throw new Error('Only the selected beneficiary can decrypt after finalization');
       }
+      await verifyReleaseFinality(config, state.id, state.requestId);
+      verifyRegisteredKit(buildRecoveryKit(vault.package), config, state);
       const identity = await storedIdentity(namespace, actor.address);
       if (!identity) {
         throw new Error('Your beneficiary encryption key is on its original browser. Use that device.');
       }
       if (
-        publicKeyHash(identity.publicKey) !== state.beneficiaryKeyHash ||
+        publicKeyHash(identity.publicKey) !== (same(actor.address, state.beneficiary) ? state.beneficiaryKeyHash : state.backupBeneficiaryKeyHash) ||
         packageCommitment(vault.package) !== state.commitment
       ) {
         throw new Error('On-chain key or package commitment mismatch');
@@ -624,7 +643,7 @@ function AppContent() {
           throw new Error('Guardian signature or approval failed verification');
         }
       }
-      const asset = await recoverAsset(vault.package, records.map(r => r.release), identity, state.requestId);
+      const asset = await recoverAsset(vault.package, records.map(r => r.release), identity, state.requestId, actor.address);
       setDecrypted({ id: state.id, asset });
       notify('Asset decrypted locally. Your inherited document is ready.');
     });
@@ -730,12 +749,7 @@ function AppContent() {
         notify('Registration is not on-chain yet. The encrypted kit is saved here and will be checked again after confirmation.');
         return;
       }
-      if (
-        packageCommitment(p) !== state.commitment ||
-        publicKeyHash(p.beneficiaryPublicKey) !== state.beneficiaryKeyHash
-      ) {
-        throw new Error('Recovery kit does not match its on-chain commitments');
-      }
+      verifyRegisteredKit(raw, config, state);
       await api.savePackage(p);
       if (kit.metadata) {
         const meta = JSON.parse(localStorage.getItem(metadataKey(config)) ?? '{}');
@@ -776,7 +790,7 @@ function AppContent() {
   const nextAddresses =
     current && guidance
       ? guidance.nextActor === 'beneficiary'
-        ? [current.state.beneficiary]
+        ? current.state.status === 0 ? [current.state.beneficiary, ...(current.state.backupBeneficiary && current.state.backupBeneficiary !== ZeroAddress ? [current.state.backupBeneficiary] : [])] : [selectedRecipient(current.state)]
         : current.state.status === 1
         ? current.state.guardians.filter(g => !current.state.approved.some(a => same(a, g)))
         : current.state.guardians.filter(
@@ -787,7 +801,7 @@ function AppContent() {
     current && actor
       ? same(actor.address, current.state.owner)
         ? 'owner'
-        : same(actor.address, current.state.beneficiary)
+        : isBeneficiary(current.state, actor.address)
         ? 'beneficiary'
         : current.state.guardians.some(g => same(g, actor.address))
         ? 'guardian'
@@ -860,7 +874,7 @@ function AppContent() {
 
   // Calculate real assignments for connected wallet
   const hasOwned = vaults.some(v => same(v.state.owner, currentUser.address));
-  const hasBeneficiary = vaults.some(v => same(v.state.beneficiary, currentUser.address));
+  const hasBeneficiary = vaults.some(v => isBeneficiary(v.state, currentUser.address));
   const hasGuardian = vaults.some(v => v.state.guardians.some(g => same(g, currentUser.address)));
 
   // 5. OWNER WORKSPACE ROUTE
@@ -1162,9 +1176,15 @@ function AppContent() {
                     <small>{short(current.state.owner)}</small>
                   </div>
                   <div>
-                    <span>Beneficiary</span>
+                    <span>Primary beneficiary</span>
                     <strong>{nameOf(current.state.beneficiary)}</strong>
                     <small>{short(current.state.beneficiary)}</small>
+                  </div>
+                  <div>
+                    <span>Backup beneficiary</span>
+                    <strong>{current.state.backupBeneficiary && current.state.backupBeneficiary !== ZeroAddress ? nameOf(current.state.backupBeneficiary) : 'Not configured'}</strong>
+                    <small>Primary eligible: {new Date((current.state.lastCheckIn + current.state.inactivity) * 1000).toLocaleString()}</small>
+                    {current.state.backupBeneficiary && current.state.backupBeneficiary !== ZeroAddress && <small>Backup eligible: {new Date((current.state.lastCheckIn + current.state.inactivity + (current.state.backupWaitingDuration ?? 0)) * 1000).toLocaleString()}</small>}
                   </div>
                   <div>
                     <span>Authorization</span>
@@ -1359,7 +1379,7 @@ function AppContent() {
                 )}
 
                 {/* BENEFICIARY ACTIONS */}
-                {currentUser && same(currentUser.address, current.state.beneficiary) ? (
+                {currentUser && isBeneficiary(current.state, currentUser.address) ? (
                   <>
                     {current.state.status === 0 && (
                       <button
@@ -1369,14 +1389,14 @@ function AppContent() {
                           offline ||
                           custodyActionBlocked('requestRecovery') ||
                           (guidance && guidance.action !== 'requestRecovery') ||
-                          time < current.state.lastCheckIn + current.state.inactivity
+                          !canRequest(current.state, currentUser.address, time)
                         }
                         onClick={() => action(current, 'requestRecovery')}
                       >
                         <ShieldCheck size={17} />
-                        {time >= current.state.lastCheckIn + current.state.inactivity
+                        {canRequest(current.state, currentUser.address, time)
                           ? 'Request recovery'
-                          : `Eligible in ${duration(current.state.lastCheckIn + current.state.inactivity - time)}`}
+                          : `Eligible in ${duration(beneficiaryDeadline(current.state, currentUser.address) - time)}`}
                       </button>
                     )}
                     {current.state.status === 1 && (
@@ -1387,7 +1407,7 @@ function AppContent() {
                           offline ||
                           custodyActionBlocked('finalizeRecovery') ||
                           (guidance && guidance.action !== 'finalizeRecovery') ||
-                          current.state.approvalCount < 2 ||
+                          !canFinalize(current.state, currentUser.address, time) ||
                           !current.state.quorumAt ||
                           time < current.state.quorumAt + current.state.challenge
                         }
@@ -1404,6 +1424,7 @@ function AppContent() {
                           !!busy ||
                           offline ||
                           custodyActionBlocked('decrypt') ||
+                          !same(currentUser.address, selectedRecipient(current.state)) ||
                           (guidance && guidance.action !== 'decrypt')
                         }
                         onClick={() => decrypt(current)}
@@ -1499,6 +1520,13 @@ function AppContent() {
                         <ChevronRight size={13} />
                       </button>
                       <button
+                        disabled={!!busy || !current.state.backupBeneficiary || current.state.backupBeneficiary === ZeroAddress}
+                        onClick={() => run('Advancing chain clock', async () => { await api.clock(Math.max(1, current.state.lastCheckIn + current.state.inactivity + (current.state.backupWaitingDuration ?? 0) - time + 1)); })}
+                      >
+                        Skip backup waiting
+                        <ChevronRight size={13} />
+                      </button>
+                      <button
                         disabled={!!busy || !current.state.quorumAt}
                         onClick={() =>
                           run('Advancing chain clock', async () => {
@@ -1516,7 +1544,7 @@ function AppContent() {
                 )}
 
                 <span className="detail-request">
-                  Request #{current.state.requestId} · Block #{block}
+                  Request #{current.state.requestId} {current.state.status !== 0 ? `· Selected recipient: ${nameOf(selectedRecipient(current.state))}` : ''} · Confirmed block #{block}
                 </span>
               </div>
             </div>

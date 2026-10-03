@@ -19,7 +19,8 @@ async function main() {
   assert(config.mode === 'local' && config.chainId === 31337, 'Start the local Hardhat demo first.');
   const rpcUrl = new URL(config.rpcUrl);
   assert(rpcUrl.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(rpcUrl.hostname) && rpcUrl.port === '8545', 'The demo RPC must be local Hardhat on port 8545.');
-  assert(config.actors?.length === 5, 'Expected five demo actors.');
+  assert(config.actors?.length === 6, 'Expected six demo actors including primary and backup. Restart npm run demo to redeploy.');
+  assert(config.abi.some(entry => entry.name === 'registerSuccessionVault'), 'The local demo needs a Succession Graph deployment.');
 
   let id = 0;
   const rpc = async (method, params = []) => {
@@ -58,7 +59,7 @@ async function main() {
 
   console.log('Heirloom Hardhat demo ready');
   console.log(`Chain: 31337 · block #${Number(tip)}`);
-  console.log(`Funded, unlocked demo wallets: ${config.actors.length}/5`);
+  console.log(`Funded, unlocked demo wallets: ${config.actors.length}/6`);
   console.log(`Contract: ${config.contractAddress}`);
   console.log(`Deployment transaction: ${receipt.transactionHash}`);
   console.log(`Contract events: ${events.length}`);

@@ -41,6 +41,11 @@ export default function DevDemoDrawer({
   const currentActor = config.actors.find(
     a => a.address.toLowerCase() === currentActorAddress?.toLowerCase()
   );
+  const demoActors = config.actors.filter(a => a.isDemo !== false).slice(0, 6);
+  const beneficiaryActors = demoActors.filter(a => a.role === 'beneficiary');
+  const roleLabel = (actor: Actor) => actor.role === 'beneficiary'
+    ? (actor.address === beneficiaryActors[0]?.address ? 'Primary beneficiary' : 'Backup beneficiary')
+    : actor.role;
 
   return (
     <div className={`dev-demo-drawer ${expanded ? 'expanded' : 'collapsed'}`}>
@@ -54,13 +59,14 @@ export default function DevDemoDrawer({
           <span>Active:</span>
           <strong>{currentActor?.name ?? 'Connecting'}</strong>
           <span className={`actor-role-chip ${currentActor?.role ?? 'owner'}`}>
-            {currentActor?.role ?? 'owner'}
+            {currentActor ? roleLabel(currentActor) : 'owner'}
           </span>
         </div>
         <button
           type="button"
           className="dev-drawer-toggle-btn"
           aria-label={expanded ? 'Collapse dev bar' : 'Expand dev bar'}
+          aria-expanded={expanded}
         >
           {expanded ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
         </button>
@@ -70,14 +76,14 @@ export default function DevDemoDrawer({
         <div className="dev-drawer-content">
           <div className="dev-drawer-info">
             <p>
-              <strong>Developer Evaluation Tool:</strong> Switch between the 5 pre-funded local Hardhat accounts
+              <strong>Developer Evaluation Tool:</strong> Switch between the {demoActors.length} pre-funded local Hardhat accounts
               to inspect each distinct workspace and test multi-actor recovery flows. This control is purely for
               local evaluation and is <strong>absent from public testnet/production</strong>.
             </p>
           </div>
 
           <div className="dev-actor-cards-grid">
-            {config.actors.filter(a => a.isDemo !== false).slice(0, 5).map(a => {
+            {demoActors.map(a => {
               const isCurrent = a.address.toLowerCase() === currentActorAddress?.toLowerCase();
               const Icon =
                 a.role === 'owner' ? ShieldCheck : a.role === 'beneficiary' ? Gift : KeyRound;
@@ -94,7 +100,7 @@ export default function DevDemoDrawer({
                 >
                   <div className="dev-actor-card-top">
                     <span className="dev-actor-avatar">{a.initials}</span>
-                    <span className={`actor-role-chip ${a.role}`}>{a.role}</span>
+                    <span className={`actor-role-chip ${a.role}`}>{roleLabel(a)}</span>
                   </div>
                   <strong>{a.name}</strong>
                   <small>{routeLabel}</small>

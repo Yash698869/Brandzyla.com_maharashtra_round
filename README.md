@@ -2,7 +2,7 @@
 
 **Protect what matters. Pass it on to the people who matter.**
 
-Heirloom is a hackathon prototype for digital inheritance. An actual Solidity contract authorizes recovery after a missed owner check-in, two independent guardian attestations, and a full owner cancellation window. The encrypted asset key is split into three shares; two guardians can deliver shares encrypted for the beneficiary, who decrypts locally.
+Heirloom is a hackathon prototype for digital inheritance. An actual Solidity contract authorizes recovery after a missed owner check-in, two independent guardian attestations, and a full owner cancellation window. A primary beneficiary has an exclusive request window; an optional backup becomes eligible after an additional owner-selected wait. Each request selects one recipient. Two guardians deliver shares encrypted for that finalized recipient, who decrypts locally.
 
 [First-round judging slides](deliverables/Heirloom_First_Round.pptx) · [Three-minute live walkthrough](docs/DEMO.md)
 
@@ -16,7 +16,7 @@ Captured during a local EVM rehearsal. The vault dashboard shows the live demo s
 
 ## Run the working demo
 
-Requires Node.js 22 and npm. Hardhat supplies five funded development wallets on a local Ethereum chain. You do not need MetaMask, Sepolia test ETH, or a faucet for this demo. From this directory:
+Requires Node.js 22 and npm. Hardhat supplies six funded development wallets (owner, primary, backup, three guardians) on a local Ethereum chain. You do not need MetaMask, Sepolia test ETH, or a faucet for this demo. From this directory:
 
 ```powershell
 npm ci
@@ -25,7 +25,7 @@ npm run demo
 
 Open [Heirloom](http://127.0.0.1:5173). Keep the terminal running. The command starts Hardhat at port 8545 (chain ID 31337), deploys Heirloom, starts the encrypted relay at port 3001, and serves the UI at port 5173. Choose an actor from the demo switcher; the app signs transactions with that actor's funded Hardhat account. Click **Load sample vaults** to create three encrypted assets with real local Ethereum transactions. Open **Activity log** and select an event to show its receipt, block number, and gas used.
 
-Before presenting, run `npm run demo:check` in a second terminal. It confirms the app and relay are responding, all five demo wallets can sign and have local ETH, and the deployed contract still matches its receipt and bytecode.
+Before presenting, run `npm run demo:check` in a second terminal. It confirms the app and relay are responding, all six demo wallets can sign and have local ETH, and the deployed contract still matches its receipt and bytecode. The sample vaults configure a backup. Use **Skip inactivity**, **Skip backup waiting**, and **Skip challenge** in a vault's local demo controls to exercise both paths.
 
 The local chain is ephemeral. Stopping its process loses chain state. Browser keys and relay ciphertext persist, but ciphertext alone cannot restore a lost blockchain. A new deployment gets a distinct custody namespace. Do not clear browser site data during the demo. Local transaction hashes are verifiable through the running Hardhat node; they do not have public Etherscan pages.
 
@@ -86,7 +86,7 @@ Heirloom provides three tailored, distinct workspaces for the three kinds of peo
 ### Standard User Menu vs. Development Demo
 
 - **Standard User Menu**: Located in the top-right header, displaying full name, email address, role badge, connected wallet address with copy button, and **Sign Out**. The menu contains **no "Switch Profile / Account"** or fake switching controls.
-- **Development Demo Drawer**: On local chains (`31337`), an explicitly labelled **DEVELOPMENT DEMO** bottom drawer is available for evaluators to switch between the 5 pre-funded Hardhat accounts (Alex Morgan, Sam Morgan, Maya Chen, James Wilson, Priya Shah) and immediately inspect their respective workspaces. This evaluation drawer is **absent from public testnet and production modes**.
+- **Development Demo Drawer**: On local chains (`31337`), an explicitly labelled **DEVELOPMENT DEMO** bottom drawer switches between six funded Hardhat accounts, including primary and backup beneficiaries. It is absent from public modes.
 
 
 ## What is implemented
@@ -96,8 +96,8 @@ Heirloom provides three tailored, distinct workspaces for the three kinds of peo
 - Protected workspace routing (`/app`) with redirect persistence and session restoration.
 - File or note encryption with AES-256-GCM; file name, MIME type, and contents are encrypted. Maximum file size: 5 MB.
 - Two-of-three Shamir sharing using Privy's existing library. RSA-OAEP identities wrap fresh AES share-envelope keys.
-- Five distinct contract roles: owner, beneficiary, and three guardians. No admin, upgrade, token, or custody of cryptocurrency funds.
-- Individual vault timing policies, beneficiary-only requests/finalization, guardian-only approvals, full challenge window after quorum, and owner cancellation before finalization.
+- Distinct owner, primary, optional backup, and three guardians. No admin, upgrade, token, or custody of cryptocurrency funds.
+- Per-vault inactivity, challenge and backup waiting durations; selected-beneficiary finalization, guardian-only approvals, and owner cancellation before finalization. The owner workspace includes a responsive Succession Graph based on confirmed chain state.
 - Wallet-signed identity enrollment and share delivery. Deployment, vault, beneficiary key, and current request are verified before release/decryption.
 - Immutable encrypted package commitments, event history, real transaction receipts, searchable vaults, and responsive UI.
 - Encrypted recovery-kit export/import; unfinished registration packages are saved in IndexedDB before broadcasting and reconciled after reload.
@@ -122,6 +122,7 @@ flowchart LR
 
 ```powershell
 npm test
+npx tsc -b
 npm run build
 ```
 

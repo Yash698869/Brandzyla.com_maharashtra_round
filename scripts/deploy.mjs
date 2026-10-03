@@ -12,9 +12,9 @@ export async function deploy(rpcUrl = 'http://127.0.0.1:8545', privateKey) {
   const signer = privateKey ? new Wallet(privateKey, provider) : await provider.getSigner(0);
   const contract = await new ContractFactory(artifact.abi, artifact.bytecode, signer).deploy(); await contract.waitForDeployment();
   const receipt = await contract.deploymentTransaction().wait();
-  const accounts = chainId === 31337 ? (await provider.listAccounts()).slice(0, 5) : [];
-  const names = ['Alex Morgan', 'Sam Morgan', 'Maya Chen', 'James Wilson', 'Priya Shah'];
-  const roles = ['owner', 'beneficiary', 'guardian', 'guardian', 'guardian'];
+  const accounts = chainId === 31337 ? (await provider.listAccounts()).slice(0, 6) : [];
+  const names = ['Alex Morgan', 'Sam Morgan', 'Maya Chen', 'James Wilson', 'Priya Shah', 'Taylor Morgan'];
+  const roles = ['owner', 'beneficiary', 'guardian', 'guardian', 'guardian', 'beneficiary'];
   const config = { chainId, contractAddress: await contract.getAddress(), rpcUrl, abi: artifact.abi, deploymentBlock: receipt.blockNumber, deploymentId: receipt.blockHash, mode: chainId === 31337 ? 'local' : 'public', confirmations: chainId === 31337 ? 1 : 3, explorerUrl: chainId === 11155111 ? 'https://sepolia.etherscan.io' : undefined, actors: await Promise.all(accounts.map(async (s, i) => ({ address: await s.getAddress(), name: names[i], role: roles[i], initials: names[i].split(' ').map(s => s[0]).join('') }))) };
   config.codeHash = keccak256(await provider.getCode(config.contractAddress));
   config.transactionHash = receipt.hash;

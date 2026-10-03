@@ -24,6 +24,8 @@ import {
 } from 'lucide-react';
 import { Brand } from '../components/Brand';
 import UserMenu from '../components/UserMenu';
+import { RecoveryPolicyStatus } from '../components/SuccessionGraph';
+import { backupRecipient, beneficiaryDeadline, canFinalize, canRequest, isBeneficiary, policyDate, selectedRecipient } from '../lib/workspace-policy';
 import { useRouter } from '../lib/router';
 import type { Config, Actor, Vault, TimelineEvent, AssetData, IdentityRecord } from '../lib/types';
 import { formatActorName, type UserAccount } from '../lib/auth';
@@ -85,9 +87,16 @@ export default function BeneficiaryWorkspace({
 
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('All');
+  const [actionError, setActionError] = useState('');
+
+  async function perform(action: (vault: Vault) => Promise<void>, vault: Vault) {
+    setActionError('');
+    try { await action(vault); }
+    catch (error) { setActionError(error instanceof Error ? error.message : 'Unable to confirm recovery action. Refresh and try again.'); }
+  }
 
   // Filter vaults where connected wallet is the designated beneficiary
-  const beneficiaryVaults = vaults.filter(v => same(v.state.beneficiary, currentUser.address));
+  const beneficiaryVaults = vaults.filter(v => isBeneficiary(v.state, currentUser.address));
   const ownedVaults = vaults.filter(v => same(v.state.owner, currentUser.address));
   const guardianVaults = vaults.filter(v => v.state.guardians.some(g => same(g, currentUser.address)));
 
@@ -100,16 +109,13 @@ export default function BeneficiaryWorkspace({
 
   // Counts
   const eligibleToRequest = beneficiaryVaults.filter(
-    v => v.state.status === 0 && time >= v.state.lastCheckIn + v.state.inactivity
+    v => canRequest(v.state, currentUser.address, time, offline)
   );
   const inRecovery = beneficiaryVaults.filter(v => v.state.status === 1);
   const readyToFinalize = inRecovery.filter(
-    v =>
-      v.state.approvalCount >= 2 &&
-      v.state.quorumAt &&
-      time >= v.state.quorumAt + v.state.challenge
+    v => canFinalize(v.state, currentUser.address, time, offline)
   );
-  const finalizedCount = beneficiaryVaults.filter(v => v.state.status === 2);
+  const finalizedCount = beneficiaryVaults.filter(v => v.state.status === 2 && same(selectedRecipient(v.state), currentUser.address));
 
   const visibleVaults = beneficiaryVaults.filter(
     v =>
@@ -137,6 +143,14 @@ export default function BeneficiaryWorkspace({
   }
 
   function getBeneficiaryStatusCopy(v: Vault): { label: string; detail: string; badgeClass: string } {
+    if (v.state.status !== 0 && !same(selectedRecipient(v.state), currentUser.address)) {
+      return {
+        label: v.state.status === 1 ? 'Another recipient holds this request' : 'Released to selected recipient',
+        detail: `Request #${v.state.requestId} belongs to ${nameOf(selectedRecipient(v.state))}. ${v.state.status === 1 ? 'A pending request cannot be displaced.' : 'Only the selected recipient can decrypt this asset.'}`,
+        badgeClass: `status-${v.state.status}`,
+      };
+    }
+    if (offline || time <= 0) return { label: 'Refresh required', detail: 'Eligibility and actions require a fresh confirmed chain snapshot.', badgeClass: 'status-0' };
     if (v.state.status === 2) {
       return {
         label: 'Ready to Decrypt',
@@ -147,7 +161,7 @@ export default function BeneficiaryWorkspace({
 
     if (v.state.status === 1) {
       const quorumMet = v.state.approvalCount >= 2;
-      const challengeEnded = v.state.quorumAt && time >= v.state.quorumAt + v.state.challenge;
+      const challengeEnded = canFinalize(v.state, currentUser.address, time, offline);
 
       if (challengeEnded) {
         return {
@@ -174,19 +188,21 @@ export default function BeneficiaryWorkspace({
     }
 
     // Status 0: Protected
-    const inactivityElapsed = time >= v.state.lastCheckIn + v.state.inactivity;
+    const deadline = beneficiaryDeadline(v.state, currentUser.address);
+    const isBackup = same(backupRecipient(v.state), currentUser.address);
+    const inactivityElapsed = canRequest(v.state, currentUser.address, time, offline);
     if (inactivityElapsed) {
       return {
         label: 'Eligible for Recovery',
-        detail: 'Owner inactivity period has elapsed. You can initiate a recovery request.',
+        detail: `${isBackup ? 'Inactivity and the additional backup waiting period have' : 'The inactivity period has'} elapsed in confirmed chain state. You can request recovery while no request is pending.`,
         badgeClass: 'status-1',
       };
     }
 
-    const untilEligible = v.state.lastCheckIn + v.state.inactivity - time;
+    const untilEligible = deadline - time;
     return {
-      label: 'Protected (Owner Active)',
-      detail: `Owner is actively checking in. Inactivity threshold elapses in ${duration(untilEligible)}.`,
+      label: isBackup ? 'Backup waiting period' : 'Protected · waiting for eligibility',
+      detail: `${isBackup ? 'Backup eligibility includes an additional waiting period.' : 'The inactivity period has not elapsed.'} Eligible from ${policyDate(deadline)} (${duration(untilEligible)} remaining at the confirmed block).`,
       badgeClass: 'status-0',
     };
   }
@@ -322,8 +338,10 @@ export default function BeneficiaryWorkspace({
         </header>
 
         <main>
+          {actionError && <div className="inline-error" role="alert">{actionError}</div>}
+          {offline && <div className="inline-error" role="status">Chain connection unavailable. Showing the last confirmed state; refresh before taking action.</div>}
           {/* Decrypted Asset Banner if any is active */}
-          {decrypted && (
+          {decrypted && beneficiaryVaults.some(v => v.state.id === decrypted.id && v.state.status === 2 && same(selectedRecipient(v.state), currentUser.address)) && (
             <div className="decrypted-quick-card">
               <div className="decrypted-quick-info">
                 <CheckCircle size={22} className="text-success" />
@@ -428,14 +446,9 @@ export default function BeneficiaryWorkspace({
                 <div className="beneficiary-vault-list">
                   {visibleVaults.map(v => {
                     const statusInfo = getBeneficiaryStatusCopy(v);
-                    const isEligibleRequest =
-                      v.state.status === 0 && time >= v.state.lastCheckIn + v.state.inactivity;
-                    const isReadyFinalize =
-                      v.state.status === 1 &&
-                      v.state.approvalCount >= 2 &&
-                      v.state.quorumAt &&
-                      time >= v.state.quorumAt + v.state.challenge;
-                    const isReadyDecrypt = v.state.status === 2;
+                    const isEligibleRequest = canRequest(v.state, currentUser.address, time, offline);
+                    const isReadyFinalize = canFinalize(v.state, currentUser.address, time, offline);
+                    const isReadyDecrypt = v.state.status === 2 && same(selectedRecipient(v.state), currentUser.address);
 
                     return (
                       <div className="beneficiary-vault-row" key={v.state.id}>
@@ -456,6 +469,7 @@ export default function BeneficiaryWorkspace({
                           </div>
 
                           <div className="beneficiary-row-details">
+                            <div className="meta-pill"><Gift size={13}/><span>{same(backupRecipient(v.state), currentUser.address) ? 'You are the optional backup' : 'You are the primary beneficiary'}</span></div>
                             <div className="meta-pill">
                               <UsersRound size={13} />
                               <span>2 of 3 guardian attestations required</span>
@@ -469,6 +483,7 @@ export default function BeneficiaryWorkspace({
                               <span>Challenge period: {duration(v.state.challenge)}</span>
                             </div>
                           </div>
+                          <RecoveryPolicyStatus vault={v} time={time} block={block} offline={offline} nameOf={nameOf}/>
 
                           <div className="beneficiary-status-explanation">
                             <Info size={14} />
@@ -481,8 +496,8 @@ export default function BeneficiaryWorkspace({
                             <button
                               type="button"
                               className="button primary"
-                              disabled={!!busy}
-                              onClick={() => onRequestRecovery(v)}
+                              disabled={!!busy || offline}
+                              onClick={() => perform(onRequestRecovery, v)}
                             >
                               <ShieldCheck size={16} />
                               Request Recovery
@@ -493,8 +508,8 @@ export default function BeneficiaryWorkspace({
                             <button
                               type="button"
                               className="button primary"
-                              disabled={!!busy}
-                              onClick={() => onFinalizeRecovery(v)}
+                              disabled={!!busy || offline}
+                              onClick={() => perform(onFinalizeRecovery, v)}
                             >
                               <KeyRound size={16} />
                               Finalize Recovery
@@ -505,8 +520,8 @@ export default function BeneficiaryWorkspace({
                             <button
                               type="button"
                               className="button primary"
-                              disabled={!!busy}
-                              onClick={() => onDecryptVault(v)}
+                              disabled={!!busy || offline}
+                              onClick={() => perform(onDecryptVault, v)}
                             >
                               <LockKeyhole size={16} />
                               Decrypt Inherited Asset
@@ -554,10 +569,7 @@ export default function BeneficiaryWorkspace({
                 <div className="claims-grid">
                   {inRecovery.map(v => {
                     const statusInfo = getBeneficiaryStatusCopy(v);
-                    const canFinalize =
-                      v.state.approvalCount >= 2 &&
-                      v.state.quorumAt &&
-                      time >= v.state.quorumAt + v.state.challenge;
+                    const ready = canFinalize(v.state, currentUser.address, time, offline);
 
                     return (
                       <div className="claim-card" key={v.state.id}>
@@ -568,6 +580,7 @@ export default function BeneficiaryWorkspace({
                           </span>
                         </div>
                         <p>{statusInfo.detail}</p>
+                        <RecoveryPolicyStatus vault={v} time={time} block={block} offline={offline} nameOf={nameOf}/>
 
                         <div className="claim-progress-bar">
                           <div
@@ -583,12 +596,12 @@ export default function BeneficiaryWorkspace({
                           <span>Approvals: {v.state.approvalCount} / 2</span>
                         </div>
 
-                        {canFinalize ? (
+                        {ready ? (
                           <button
                             type="button"
                             className="button primary full"
-                            disabled={!!busy}
-                            onClick={() => onFinalizeRecovery(v)}
+                            disabled={!!busy || offline}
+                            onClick={() => perform(onFinalizeRecovery, v)}
                           >
                             <KeyRound size={15} />
                             Finalize Recovery on Ethereum
