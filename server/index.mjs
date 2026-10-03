@@ -2,7 +2,7 @@ import express from 'express';
 import { Contract, JsonRpcProvider, verifyMessage, keccak256 } from 'ethers';
 import { validateDeployment } from '../shared/chain-safety.mjs';
 import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync } from 'node:fs';
-import { randomBytes, pbkdf2Sync } from 'node:crypto';
+import { randomBytes, randomInt, pbkdf2Sync } from 'node:crypto';
 import { digest, identityMessage, releaseMessage } from '../shared/protocol.mjs';
 import { validatePackageShape, validateIdentity, validateReleaseContext, validateRecoveryKit, validateRegistration } from './validation.mjs';
 
@@ -20,7 +20,7 @@ async function verifyDeployment() {
 await verifyDeployment();
 const file = `.runtime/relay-${config.deploymentId.slice(2, 18)}.json`;
 let data = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { identities: {}, packages: {}, releases: {} };
-function save(next) {
+function save(next = data) {
   mkdirSync('.runtime', { recursive: true });
   writeFileSync(`${file}.tmp`, JSON.stringify(next));
   renameSync(`${file}.tmp`, file);
@@ -112,12 +112,13 @@ app.post('/api/auth/send-otp', route(async (req, res) => {
     throw new Error(`Please wait ${remaining}s before requesting a new verification code`);
   }
 
-  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const code = randomInt(100000, 1000000).toString();
   const expiresAt = Date.now() + 10 * 60 * 1000;
   otps.set(email, { code, expiresAt, attempts: 0, createdAt: Date.now() });
 
   const apiKey = process.env.RESEND_API_KEY || '';
   const fromEmail = process.env.RESEND_FROM_EMAIL || 'Heirloom <onboarding@resend.dev>';
+  const allowDemoCode = config.mode === 'local';
   let emailSent = false;
   let devNotice;
 
@@ -211,7 +212,13 @@ Protect what matters. Pass it on.`;
 </body>
 </html>`;
 
-  try {
+  if (!apiKey) {
+    if (!allowDemoCode) {
+      otps.delete(email);
+      throw new Error('Email delivery is not configured. Contact the app operator.');
+    }
+    devNotice = `Email delivery is not configured. Test verification code: ${code}`;
+  } else try {
     const resendRes = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
@@ -233,7 +240,7 @@ Protect what matters. Pass it on.`;
     const data = await resendRes.json();
     if (!resendRes.ok) {
       console.warn('Resend API notice:', data);
-      if (data?.message?.includes('testing emails')) {
+      if (allowDemoCode && data?.message?.includes('testing emails')) {
         devNotice = `Note: Resend trial domain only delivers to the account owner's email. For local testing, your verification code is: ${code}`;
       } else {
         throw new Error(data.message || 'Failed to deliver verification email');
@@ -243,6 +250,10 @@ Protect what matters. Pass it on.`;
     }
   } catch (err) {
     console.error('Email dispatch notice:', err.message);
+    if (!allowDemoCode) {
+      otps.delete(email);
+      throw new Error('Email delivery failed. Contact the app operator or try again later.');
+    }
     if (!devNotice) {
       devNotice = `Email delivery warning: ${err.message}. Test verification code: ${code}`;
     }
@@ -251,8 +262,7 @@ Protect what matters. Pass it on.`;
   res.json({
     ok: true,
     message: emailSent ? 'Verification code sent to your email.' : (devNotice || 'Verification code created.'),
-    devCode: code,
-    devNotice
+    ...(allowDemoCode && !emailSent ? { devCode: code, devNotice } : {})
   });
 }));
 
@@ -324,8 +334,8 @@ app.post('/api/auth/register', route(async (req, res) => {
     throw new Error('Please verify your email address with the verification code first.');
   }
 
-  data.users = data.users || {};
-  if (data.users[cleanEmail]) {
+  const users = data.users || {};
+  if (users[cleanEmail]) {
     throw new Error('An account with this email address already exists. Please log in.');
   }
 
@@ -346,18 +356,15 @@ app.post('/api/auth/register', route(async (req, res) => {
     createdAt: Date.now()
   };
 
-  data.users[cleanEmail] = user;
-
   const token = randomBytes(32).toString('hex');
-  data.sessions = data.sessions || {};
-  data.sessions[token] = {
+  const sessions = { ...(data.sessions || {}), [token]: {
     userId: user.id,
     email: user.email,
     createdAt: Date.now(),
     expiresAt: Date.now() + 7 * 86400 * 1000
-  };
+  } };
 
-  save();
+  save({ ...data, users: { ...users, [cleanEmail]: user }, sessions });
   verifiedEmails.delete(cleanEmail);
 
   res.json({
@@ -389,14 +396,13 @@ app.post('/api/auth/login', route(async (req, res) => {
   }
 
   const token = randomBytes(32).toString('hex');
-  data.sessions = data.sessions || {};
-  data.sessions[token] = {
+  const sessions = { ...(data.sessions || {}), [token]: {
     userId: user.id,
     email: user.email,
     createdAt: Date.now(),
     expiresAt: Date.now() + 7 * 86400 * 1000
-  };
-  save();
+  } };
+  save({ ...data, sessions });
 
   res.json({
     ok: true,
@@ -419,16 +425,15 @@ app.post('/api/auth/demo-login', route(async (req, res) => {
   if (!actor) throw new Error('Demo actor not found');
 
   const token = `demo_tok_${randomBytes(24).toString('hex')}`;
-  data.sessions = data.sessions || {};
-  data.sessions[token] = {
+  const sessions = { ...(data.sessions || {}), [token]: {
     userId: `demo_${actor.address.toLowerCase()}`,
     email: `${actor.name.toLowerCase().replace(/\s+/g, '.')}@heirloom.local`,
     isDemo: true,
     actorAddress: actor.address,
     createdAt: Date.now(),
     expiresAt: Date.now() + 7 * 86400 * 1000
-  };
-  save();
+  } };
+  save({ ...data, sessions });
 
   res.json({
     ok: true,
@@ -496,8 +501,8 @@ app.post('/api/auth/logout', route(async (req, res) => {
   const authHeader = req.headers.authorization;
   const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : req.body?.token;
   if (token && data.sessions?.[token]) {
-    delete data.sessions[token];
-    save();
+    const sessions = { ...data.sessions }; delete sessions[token];
+    save({ ...data, sessions });
   }
   res.json({ ok: true });
 }));

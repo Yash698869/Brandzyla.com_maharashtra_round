@@ -78,12 +78,13 @@ test('relay validates chain authorization and keeps acknowledged ciphertext thro
     deploymentBlock: receipt.blockNumber, deploymentId: receipt.blockHash, codeHash: keccak256(await provider.getCode(binding.contract)),
     mode: 'local', confirmations: 1 };
   mkdirSync(join(runtime, '.runtime'));
-  writeFileSync(join(runtime, '.runtime/deployment.json'), JSON.stringify(config));
+  const deploymentFile = join(runtime, '.runtime/deployment.json');
+  writeFileSync(deploymentFile, JSON.stringify(config));
   const relayFile = join(runtime, `.runtime/relay-${config.deploymentId.slice(2, 18)}.json`);
   const base = `http://127.0.0.1:${relayPort}`;
   const startRelay = async () => {
     relayOutput = '';
-    relay = spawn(process.execPath, [join(project, 'server/index.mjs')], { cwd: runtime, env: { ...process.env, HEIRLOOM_RELAY_PORT: String(relayPort) }, stdio: ['ignore', 'pipe', 'pipe'] });
+    relay = spawn(process.execPath, [join(project, 'server/index.mjs')], { cwd: runtime, env: { ...process.env, RESEND_API_KEY: '', HEIRLOOM_RELAY_PORT: String(relayPort) }, stdio: ['ignore', 'pipe', 'pipe'] });
     for (const stream of [relay.stdout, relay.stderr]) stream.on('data', chunk => { relayOutput += chunk; });
     await eventually(async () => (await fetch(`${base}/api/health`)).ok, () => relayOutput);
   };
@@ -96,6 +97,20 @@ test('relay validates chain authorization and keeps acknowledged ciphertext thro
     return { status: response.status, body: await response.json() };
   };
   await startRelay();
+
+  await t.test('persists an account after the email verification fallback succeeds', async () => {
+    const email = 'verified-user@example.com';
+    const sent = await post('auth/send-otp', { email });
+    assert.equal(sent.status, 200);
+    assert.match(sent.body.message, /not configured/i);
+    assert.match(sent.body.devCode, /^\d{6}$/);
+    assert.equal((await post('auth/verify-otp', { email, code: sent.body.devCode })).status, 200);
+    const registered = await post('auth/register', { name: 'Verified User', email, password: 'correct-horse', role: 'owner' });
+    assert.equal(registered.status, 200, registered.body.error);
+    const persisted = JSON.parse(readFileSync(relayFile, 'utf8'));
+    assert.equal(persisted.users[email].name, 'Verified User');
+    assert.equal(persisted.sessions[registered.body.token].email, email);
+  });
 
   await t.test('rejects an identity signed by another wallet', async () => {
     const identity = { address: addresses[2], publicKey, signature: await signers[3].signMessage(identityMessage(config, addresses[2], publicKey)) };
@@ -203,5 +218,14 @@ test('relay validates chain authorization and keeps acknowledged ciphertext thro
       assert.equal((await post('packages', { package: otherPackage })).status, 400);
       assert.deepEqual((await get('packages')).body, [p]);
     } finally { rmSync(temporaryFile, { recursive: true }); }
+  });
+
+  await t.test('does not disclose a test code when public email delivery is unavailable', async () => {
+    await stop(relay);
+    writeFileSync(deploymentFile, JSON.stringify({ ...config, mode: 'public' }));
+    await startRelay();
+    const response = await post('auth/send-otp', { email: 'public-user@example.com' });
+    assert.equal(response.status, 400);
+    assert.match(response.body.error, /email delivery/i);
   });
 });
