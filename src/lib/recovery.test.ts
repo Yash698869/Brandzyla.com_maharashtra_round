@@ -40,6 +40,18 @@ describe('recovery guidance follows the on-chain gates', () => {
     expect(guidance(quorum, owner, 215).action).toBe('checkIn');
   });
 
+  it('allows the last guardian to attest after quorum while beneficiary guidance stays on finalization', () => {
+    const quorum = { ...vault, status: 1, requestId: 1, approvalCount: 2, approved: guardians.slice(0, 2), quorumAt: 200 };
+    expect(guidance(quorum, guardians[2], 215)).toMatchObject({
+      nextActor: 'beneficiary', waitSeconds: 15, action: 'approveRecovery',
+    });
+    expect(guidance(quorum, guardians[2], 230)).toMatchObject({
+      nextActor: 'beneficiary', action: 'approveRecovery',
+    });
+    expect(guidance(quorum, guardians[0], 215).action).toBeUndefined();
+    expect(guidance(quorum, beneficiary, 230).action).toBe('finalizeRecovery');
+  });
+
   it('requires two delivered shares before beneficiary decryption and avoids duplicate guardian release', () => {
     const finalized = { ...vault, status: 2, requestId: 1, approvalCount: 2, approved: guardians.slice(0, 2), quorumAt: 200, finalizedAt: 230 };
     expect(guidance(finalized, beneficiary, 240, [])).toMatchObject({ nextActor: 'guardian', sharesNeeded: 2 });
@@ -57,6 +69,8 @@ describe('recovery guidance follows the on-chain gates', () => {
     expect(guidance(succession, backup, 279).action).toBeUndefined();
     expect(guidance(succession, backup, 280).action).toBe('requestRecovery');
     const pending = { ...succession, status: 1, requestId: 1, selectedBeneficiary: backup, approvalCount: 2, approved: guardians.slice(0, 2), quorumAt: 280 };
+    expect(guidance(pending, guardians[2], 300)).toMatchObject({ action: 'approveRecovery', waitSeconds: 10 });
+    expect(guidance(pending, guardians[2], 310).action).toBe('approveRecovery');
     expect(guidance(pending, beneficiary, 400).action).toBeUndefined();
     expect(guidance(pending, backup, 309).action).toBeUndefined();
     expect(guidance(pending, backup, 310).action).toBe('finalizeRecovery');

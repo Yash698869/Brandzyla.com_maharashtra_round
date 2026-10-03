@@ -260,7 +260,7 @@ function AppContent() {
         initializeChain(c);
 
         // Check & validate session with server
-        const sessionUser = await restoreSession();
+        const sessionUser = await restoreSession(c);
         if (!live) return;
         if (sessionUser) {
           setCurrentUserState(sessionUser);
@@ -392,6 +392,7 @@ function AppContent() {
     if (busy) return;
     setBusy(label);
     setError('');
+    setToast('');
     setLastHash('');
     try {
       await fn();
@@ -547,18 +548,18 @@ function AppContent() {
   async function action(vault: Vault, method: 'requestRecovery' | 'approveRecovery' | 'finalizeRecovery' | 'checkIn') {
     if (!vault || !actor || !config) return;
 
-    // Strict contract authorization check
-    if (method === 'checkIn' && !same(actor.address, vault.state.owner)) {
-      throw new Error(`Wallet mismatch: Connected wallet ${short(actor.address)} is not the vault owner (${short(vault.state.owner)}).`);
-    }
-    if (method === 'requestRecovery' && !isBeneficiary(vault.state, actor.address) || method === 'finalizeRecovery' && !same(actor.address, selectedRecipient(vault.state))) {
-      throw new Error('Wallet mismatch: only a configured beneficiary can request, and only the selected request beneficiary can finalize.');
-    }
-    if (method === 'approveRecovery' && !vault.state.guardians.some(g => same(g, actor.address))) {
-      throw new Error(`Wallet mismatch: Connected wallet ${short(actor.address)} is not a configured guardian.`);
-    }
-
     await run(method === 'checkIn' ? 'Confirming check-in' : 'Confirming transaction', async () => {
+      // Strict contract authorization check
+      if (method === 'checkIn' && !same(actor.address, vault.state.owner)) {
+        throw new Error(`Wallet mismatch: Connected wallet ${short(actor.address)} is not the vault owner (${short(vault.state.owner)}).`);
+      }
+      if ((method === 'requestRecovery' && !isBeneficiary(vault.state, actor.address)) ||
+          (method === 'finalizeRecovery' && !same(actor.address, selectedRecipient(vault.state)))) {
+        throw new Error('Wallet mismatch: only a configured beneficiary can request, and only the selected request beneficiary can finalize.');
+      }
+      if (method === 'approveRecovery' && !vault.state.guardians.some(g => same(g, actor.address))) {
+        throw new Error(`Wallet mismatch: Connected wallet ${short(actor.address)} is not a configured guardian.`);
+      }
       const contract = await writableContract(config, actor.address);
       const args =
         method === 'requestRecovery' || method === 'checkIn'
@@ -579,11 +580,10 @@ function AppContent() {
   async function release(vault: Vault) {
     if (!vault || !actor || !config) return;
 
-    if (!vault.state.guardians.some(g => same(g, actor.address))) {
-      throw new Error(`Wallet mismatch: Connected wallet ${short(actor.address)} is not a guardian for this vault.`);
-    }
-
     await run('Encrypting guardian release', async () => {
+      if (!vault.state.guardians.some(g => same(g, actor.address))) {
+        throw new Error(`Wallet mismatch: Connected wallet ${short(actor.address)} is not a guardian for this vault.`);
+      }
       const state = await getVault(config, vault.state.id);
       if (state.status !== 2 || !state.approved.some(g => same(g, actor.address))) {
         throw new Error('Finalize recovery and approve with this guardian before releasing its share');
@@ -614,11 +614,10 @@ function AppContent() {
   async function decrypt(vault: Vault) {
     if (!vault || !actor || !config) return;
 
-    if (!same(actor.address, selectedRecipient(vault.state))) {
-      throw new Error('Wallet mismatch: only the selected request beneficiary can decrypt.');
-    }
-
     await run('Verifying & decrypting', async () => {
+      if (!same(actor.address, selectedRecipient(vault.state))) {
+        throw new Error('Wallet mismatch: only the selected request beneficiary can decrypt.');
+      }
       const state = await getVault(config, vault.state.id);
       if (state.status !== 2 || !same(selectedRecipient(state), actor.address)) {
         throw new Error('Only the selected beneficiary can decrypt after finalization');
@@ -1040,11 +1039,21 @@ function AppContent() {
           </div>
         )}
 
-        {toast && (
+        {toast && !error && (
           <div className="toast" role="status">
             <CircleCheck size={19} />
             {toast}
             <button aria-label="Dismiss notification" onClick={() => setToast('')}>
+              <X size={14} />
+            </button>
+          </div>
+        )}
+
+        {error && !current && (
+          <div className="toast error-banner" role="alert">
+            <CircleAlert size={19} />
+            <span>{error}</span>
+            <button aria-label="Dismiss error" onClick={() => setError('')}>
               <X size={14} />
             </button>
           </div>

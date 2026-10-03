@@ -63,6 +63,10 @@ export function recoveryGuidance(state: VaultState, actorAddress: string | undef
       ? { nextActor: 'beneficiary', nextAction: 'Finalize after the owner cancellation window', actorMessage: 'The owner can still cancel this recovery.', waitSeconds }
       : { nextActor: 'beneficiary', nextAction: 'Finalize recovery', actorMessage: 'The cancellation window has ended.' };
     if (selected && !waitSeconds) result.action = 'finalizeRecovery';
+    if (guardian && !approved) {
+      result.action = 'approveRecovery';
+      result.actorMessage = 'Verify the owner’s unavailability independently before attesting.';
+    }
   } else if (deliveryCount < 2) {
     result = { nextActor: 'guardian', nextAction: 'Deliver encrypted key shares', actorMessage: 'Waiting for approved guardians to deliver encrypted shares.', sharesNeeded: 2 - deliveryCount };
     if (guardian && approved && !delivered) { result.action = 'release'; result.actorMessage = 'Your approved share can be encrypted for the beneficiary.'; }

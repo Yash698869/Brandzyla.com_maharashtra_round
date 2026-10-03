@@ -63,8 +63,9 @@ export default function LogInPage({ config, onSuccess }: LogInPageProps) {
     if (!validate()) return;
 
     try {
-      setBusy('Authenticating session...');
-      const user = await loginWithEmail(email, password);
+      if (!config) throw new Error('Chain configuration is still loading. Please wait a moment.');
+      setBusy(config.mode === 'public' ? 'Confirming your wallet and session...' : 'Authenticating session...');
+      const user = await loginWithEmail(email, password, config);
       onSuccess(user);
       const roleHome =
         user.role === 'guardian'
@@ -124,6 +125,7 @@ export default function LogInPage({ config, onSuccess }: LogInPageProps) {
             <h1>Welcome back</h1>
             <p>
               Sign in to manage your encrypted vaults, attestations, and inherited digital assets.
+              {config?.mode === 'public' && ' Connect the wallet linked to your account when prompted.'}
             </p>
           </div>
 

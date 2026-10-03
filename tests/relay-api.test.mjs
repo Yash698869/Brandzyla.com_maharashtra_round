@@ -80,11 +80,24 @@ test('relay validates chain authorization and keeps acknowledged ciphertext thro
   mkdirSync(join(runtime, '.runtime'));
   const deploymentFile = join(runtime, '.runtime/deployment.json');
   writeFileSync(deploymentFile, JSON.stringify(config));
+  const otpFile = join(runtime, 'public-otp.txt');
+  const preloadFile = join(runtime, 'mock-email.cjs');
+  writeFileSync(preloadFile, `const { writeFileSync } = require('node:fs');
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async (url, options) => {
+  if (url === 'https://api.resend.com/emails') {
+    const payload = JSON.parse(options.body);
+    writeFileSync(process.env.AUTH_TEST_OTP_FILE, payload.subject.match(/^\\d{6}/)[0]);
+    return new Response(JSON.stringify({ id: 'test-email' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }
+  return originalFetch(url, options);
+};`);
   const relayFile = join(runtime, `.runtime/relay-${config.deploymentId.slice(2, 18)}.json`);
   const base = `http://127.0.0.1:${relayPort}`;
-  const startRelay = async () => {
+  const startRelay = async (emailAvailable = true) => {
     relayOutput = '';
-    relay = spawn(process.execPath, [join(project, 'server/index.mjs')], { cwd: runtime, env: { ...process.env, DATABASE_URL: '', RESEND_API_KEY: '', HEIRLOOM_DEPLOYMENT_FILE: deploymentFile, HEIRLOOM_RELAY_PORT: String(relayPort) }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const isPublic = JSON.parse(readFileSync(deploymentFile, 'utf8')).mode === 'public';
+    relay = spawn(process.execPath, ['-r', preloadFile, join(project, 'server/index.mjs')], { cwd: runtime, env: { ...process.env, DATABASE_URL: '', RESEND_API_KEY: isPublic && emailAvailable ? 'test-key' : '', AUTH_TEST_OTP_FILE: otpFile, HEIRLOOM_DEPLOYMENT_FILE: deploymentFile, HEIRLOOM_RELAY_PORT: String(relayPort) }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     for (const stream of [relay.stdout, relay.stderr]) stream.on('data', chunk => { relayOutput += chunk; });
     await eventually(async () => (await fetch(`${base}/api/health`)).ok, () => relayOutput);
   };
@@ -110,6 +123,20 @@ test('relay validates chain authorization and keeps acknowledged ciphertext thro
     const persisted = JSON.parse(readFileSync(relayFile, 'utf8'));
     assert.equal(persisted.users[email].name, 'Verified User');
     assert.equal(persisted.sessions[registered.body.token].email, email);
+  });
+
+  await t.test('local demo login remains available without a wallet challenge', async () => {
+    const demoConfig = { ...config, actors: [{ name: 'Demo Owner', role: 'owner', address: addresses[0], initials: 'DO' }] };
+    await stop(relay);
+    writeFileSync(deploymentFile, JSON.stringify(demoConfig));
+    await startRelay();
+    const response = await post('auth/demo-login', { address: addresses[0] });
+    assert.equal(response.status, 200, response.body.error);
+    assert.equal(response.body.user.isDemo, true);
+    assert.ok(response.body.token);
+    await stop(relay);
+    writeFileSync(deploymentFile, JSON.stringify(config));
+    await startRelay();
   });
 
   await t.test('rejects an identity signed by another wallet', async () => {
@@ -290,9 +317,79 @@ test('relay validates chain authorization and keeps acknowledged ciphertext thro
   await t.test('does not disclose a test code when public email delivery is unavailable', async () => {
     await stop(relay);
     writeFileSync(deploymentFile, JSON.stringify({ ...config, mode: 'public' }));
+    await startRelay(false);
+    const response = await post('auth/send-otp', { email: 'unavailable-email@example.com' });
+    assert.equal(response.status, 400);
+    assert.match(response.body.error, /email.*not configured/i);
+    assert.equal(response.body.devCode, undefined);
+    assert.equal(response.body.devNotice, undefined);
+  });
+
+  await t.test('public email response never discloses a test code', async () => {
+    await stop(relay);
+    writeFileSync(deploymentFile, JSON.stringify({ ...config, mode: 'public' }));
     await startRelay();
     const response = await post('auth/send-otp', { email: 'public-user@example.com' });
-    assert.equal(response.status, 400);
-    assert.match(response.body.error, /email delivery/i);
+    assert.equal(response.status, 200, response.body.error);
+    assert.equal(response.body.devCode, undefined);
+    assert.equal(response.body.devNotice, undefined);
+  });
+
+  await t.test('public signup binds the account to a wallet that signed its challenge', async () => {
+    const email = 'public-user@example.com';
+    const code = readFileSync(otpFile, 'utf8');
+    assert.equal((await post('auth/verify-otp', { email, code })).status, 200);
+    const details = { name: 'Public User', email, password: 'public-password', role: 'owner', address: addresses[1] };
+    const missing = await post('auth/register', details);
+    assert.equal(missing.status, 400);
+    assert.match(missing.body.error, /wallet/i);
+    const challenge = await post('auth/wallet-challenge', { action: 'register', email, address: addresses[1] });
+    assert.equal(challenge.status, 200, challenge.body.error);
+    const wrong = await post('auth/register', {
+      ...details, challenge: challenge.body.challenge,
+      signature: await signers[2].signMessage(challenge.body.message)
+    });
+    assert.equal(wrong.status, 400);
+    assert.match(wrong.body.error, /signature|wallet/i);
+    const registered = await post('auth/register', {
+      ...details, challenge: challenge.body.challenge,
+      signature: await signers[1].signMessage(challenge.body.message)
+    });
+    assert.equal(registered.status, 200, registered.body.error);
+    assert.equal(registered.body.user.address.toLowerCase(), addresses[1].toLowerCase());
+    assert.ok(registered.body.token);
+  });
+
+  await t.test('public login requires proof from the registered wallet and rejects replay', async () => {
+    const email = 'verified-user@example.com';
+    const password = 'correct-horse';
+    const storedAddress = JSON.parse(readFileSync(relayFile, 'utf8')).users[email].address;
+    const ownerIndex = addresses.findIndex(address => address.toLowerCase() === storedAddress.toLowerCase());
+    assert.notEqual(ownerIndex, -1, 'local registration fixture should use an unlocked test wallet');
+
+    const withoutWallet = await post('auth/login', { email, password });
+    assert.equal(withoutWallet.status, 400);
+    assert.match(withoutWallet.body.error, /wallet/i);
+
+    const challenge = await post('auth/wallet-challenge', { action: 'login', email, address: storedAddress });
+    assert.equal(challenge.status, 200, challenge.body.error);
+    assert.ok(challenge.body.message);
+    const wrongWallet = await post('auth/login', {
+      email, password, address: storedAddress, challenge: challenge.body.challenge,
+      signature: await signers[(ownerIndex + 1) % signers.length].signMessage(challenge.body.message)
+    });
+    assert.equal(wrongWallet.status, 400);
+    assert.match(wrongWallet.body.error, /wallet|signature/i);
+
+    const proof = {
+      email, password, address: storedAddress, challenge: challenge.body.challenge,
+      signature: await signers[ownerIndex].signMessage(challenge.body.message)
+    };
+    const accepted = await post('auth/login', proof);
+    assert.equal(accepted.status, 200, accepted.body.error);
+    assert.ok(accepted.body.token);
+    const replay = await post('auth/login', proof);
+    assert.equal(replay.status, 400);
+    assert.match(replay.body.error, /challenge|wallet/i);
   });
 });
