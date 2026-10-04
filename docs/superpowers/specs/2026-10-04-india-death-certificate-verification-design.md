@@ -1,7 +1,7 @@
 # Heirloom: Indian digital death-certificate verification
 
 Date: 2026-10-04
-Status: design approved in conversation; written spec awaiting user review
+Status: written spec approved by the user; implementation plan pending review
 
 ## Intent and evidence boundary
 
