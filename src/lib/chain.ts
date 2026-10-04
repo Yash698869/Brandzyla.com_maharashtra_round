@@ -49,7 +49,7 @@ export async function getVault(config: Config, id: string): Promise<VaultState> 
   const approved = Number(v.status) === 0 ? [] : (await Promise.all(guardians.map(async g => await contract.hasApproved(id, v.requestId, g) ? g : ''))).filter(Boolean);
   return { id, owner: v.owner, beneficiary: v.beneficiary, guardians, inactivity: Number(v.inactivity), challenge: Number(v.challenge), lastCheckIn: Number(v.lastCheckIn), quorumAt: Number(v.quorumAt), finalizedAt: Number(v.finalizedAt), requestId: Number(v.requestId), approvalCount: Number(v.approvalCount), status: Number(v.status), commitment: v.commitment, beneficiaryKeyHash: v.beneficiaryKeyHash, approved };
 }
-export async function chainTime() { const block = await readProvider.getBlock('latest'); if (!block) throw new Error('Chain unavailable'); return { timestamp: block.timestamp, blockNumber: block.number }; }
+export async function chainTime() { const block = await readProvider.getBlock('latest'); if (!block) throw new Error('Chain unavailable'); return { timestamp: block.timestamp, blockNumber: block.number, observedAtMs: Date.now() }; }
 export async function history(config: Config): Promise<TimelineEvent[]> {
   const contract = readContract(config);
   const logs = await contract.queryFilter('*', config.deploymentBlock);
