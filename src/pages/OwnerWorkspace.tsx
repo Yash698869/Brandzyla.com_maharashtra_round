@@ -28,6 +28,7 @@ import {
 import { Brand, VaultIllustration } from '../components/Brand';
 import UserMenu from '../components/UserMenu';
 import SuccessionGraph from '../components/SuccessionGraph';
+import EvidenceEnrollment from '../components/EvidenceEnrollment';
 import { backupRecipient, isBeneficiary, selectedRecipient, policyDate } from '../lib/workspace-policy';
 import { useRouter } from '../lib/router';
 import type { Config, Actor, Vault, TimelineEvent, IdentityRecord } from '../lib/types';
@@ -480,7 +481,10 @@ export default function OwnerWorkspace({
               </div>
 
               {visibleVaults.length > 0 ? (
-                <div className="vault-grid">{visibleVaults.map(vaultCard)}</div>
+                <>
+                  <div className="vault-grid">{visibleVaults.map(vaultCard)}</div>
+                  <div className="evidence-enrollment-list">{visibleVaults.map(v => <EvidenceEnrollment key={v.state.id} vault={v} config={config} ownerAddress={currentUser.address}/>)}</div>
+                </>
               ) : (
                 <div className="empty-vault">
                   <span className="empty-art">
