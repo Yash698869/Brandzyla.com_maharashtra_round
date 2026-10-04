@@ -32,9 +32,20 @@ The local chain is ephemeral. Stopping its process loses chain state. Browser ke
 
 Read the [three-minute judging walkthrough](docs/DEMO.md) and [public deployment instructions](docs/SEPOLIA.md).
 
-## Death-certificate evidence demo
+## Signed-PDF evidence verification (local demo)
 
-The guardian workspace can display a check-by-check receipt for a signed PDF. The included `test-local` issuer is synthetic and must always be presented as **DEMO / NOT GOVERNMENT EVIDENCE**. It is not connected to DigiLocker, CRS, a government registry, or a government certificate authority. The uploaded PDF and extracted identity fields are checked transiently; the relay stores only a PDF digest and sanitized, request-bound check results.
+The guardian workspace can display a check-by-check receipt for a signed PDF. The verifier checks the embedded CMS signature, full-file byte-range coverage, certificate chain, revocation evidence in the configured profile, the approved signer fingerprint, and the signed text fields. An owner can enroll an identity before recovery using a wallet-signed commitment bound to the chain deployment, contract, vault, and owner. The relay does not retain the uploaded PDF or extracted name/identifier; it stores the salted commitment and a sanitized receipt bound to the deployment, vault, and recovery request. Guardians can refresh the receipt while a request is open, and the evidence result remains separate from their on-chain approval.
+
+Only the synthetic `test-local` issuer profile is enabled. The generated PDF visibly carries **DEMO / NOT GOVERNMENT EVIDENCE** inside its signed bytes and uses the fictional identity **Demo Person / DEMO-042**. It is not connected to DigiLocker, CRS, a government registry, or a government certificate authority.
+
+| Receipt status | Meaning |
+| --- | --- |
+| **Test issuer verified** | All required checks passed for the synthetic local issuer and fictional claims. This is demo evidence only. |
+| **Signed, issuer unverified** | Signature, file coverage, chain, and revocation checks passed, but the signer is not on the configured allowlist. The verifier withholds field parsing and owner-identity matching. |
+| **Indeterminate** | Required trust or revocation evidence is missing or could not be checked. |
+| **Failed** | The signature, coverage, trust, approved issuer, signed fields, or enrolled identity check failed. |
+
+No current profile can produce a government-verified result. Legacy evidence rows without a deployment binding are intentionally ignored; re-upload evidence after moving an existing relay database to this version.
 
 Generate a disposable synthetic certificate and run the byte-tamper smoke check before judging:
 
@@ -46,7 +57,7 @@ npm run evidence:smoke
 
 The fixture uses the fictional identity **Demo Person / DEMO-042**. Its private signing key is removed after generation, and all generated files are under ignored `.runtime/`. The check command prints signature, final-file coverage, certificate-chain, revocation, issuer, and field results as JSON. Its offline output explicitly says owner identity was not checked; that comparison happens in the guardian upload flow against the owner's signed enrollment. The smoke command verifies the generated PDF, changes one signed byte, and confirms that the altered PDF fails.
 
-For the workspace demonstration, enroll a fresh active vault before requesting recovery using the fixture's fictional name and identifier. After a recovery request starts, a designated guardian uploads `.runtime/evidence-demo/signed.pdf` and reviews the receipt. The evidence upload does not count as a guardian approval or advance the contract; the existing two-of-three approvals, owner challenge window, and on-chain finalization still control release. Do not enter a real person's sensitive identifier for this demo.
+For the workspace demonstration, enroll a fresh active vault before requesting recovery using the fixture's fictional name and identifier. After a recovery request starts, a designated guardian uploads `.runtime/evidence-demo/signed.pdf` and reviews the receipt. Another guardian can use **Refresh evidence** to load the latest receipt without leaving the request. The evidence upload does not count as a guardian approval or advance the contract; the existing two-of-three approvals, owner challenge window, and on-chain finalization still control release. Do not enter a real person's sensitive identifier for this demo.
 
 Real India DigiLocker/CRS verification remains pending. No genuine signed death-certificate sample was available to confirm whether the issuer provides a PDF signature or only a QR/portal proof, the certificate-field layout, or the signer identity. Before enabling a government result, a real specimen must validate the exact issuer profile and field parser; the CCA trust-anchor fingerprint and permitted signer identities must also be confirmed independently through official channels, and current profile-approved CRL/OCSP evidence must be verified. A CCA root by itself does not identify a government death-certificate signer. Until all those checks are implemented and tested, the app cannot report **Government issuer verified**. See the [CCA root-certificate guidance](https://cca.gov.in/root_certificate.html), [CCA signature-verification guidance](https://cca.gov.in/signature_verification.html), and [DigiLocker verification circular](https://cdn.digilocker.gov.in/assets/img/circulars/Letter-to-All-State-Governments-UTs.pdf).
 
@@ -118,7 +129,7 @@ Heirloom provides three tailored, distinct workspaces for the three kinds of peo
 - Distinct owner, primary, optional backup, and three guardians. No admin, upgrade, token, or custody of cryptocurrency funds.
 - Per-vault inactivity, challenge and backup waiting durations; selected-beneficiary finalization, guardian-only approvals, and owner cancellation before finalization. The owner workspace includes a responsive Succession Graph showing chain-confirmed policy and request state.
 - Live inactivity, backup waiting, and owner challenge countdowns tick between block updates. They project from the latest block timestamp; the contract checks eligibility again when an action is submitted.
-- Signed-PDF evidence receipts show separate signature, final-file coverage, trust-chain, revocation, issuer, signed-field, and owner-identity results for guardians. The local test issuer is clearly labeled and does not replace guardian approval.
+- Signed-PDF evidence receipts show separate signature, final-file coverage, trust-chain, revocation, issuer, signed-field, and owner-identity results for guardians, including the distinct **Signed, issuer unverified** outcome. The local test issuer is visibly labeled and does not replace guardian approval.
 - Wallet-signed identity enrollment and share delivery. Deployment, vault, beneficiary key, and current request are verified before release/decryption.
 - Immutable encrypted package commitments, event history, real transaction receipts, searchable vaults, and responsive UI.
 - Encrypted recovery-kit export/import; unfinished registration packages are saved in IndexedDB before broadcasting and reconciled after reload.
@@ -147,9 +158,10 @@ flowchart LR
 npm test
 npx tsc -b
 npm run build
+npm run evidence:smoke
 ```
 
-The contract tests run transactions against a separate EVM on port 18545. Crypto tests cover exact byte recovery, duplicate/insufficient shares, mixed requests, wrong recipients, and tampering. Storage and protocol tests cover concurrency, preserved registration packages, replaced deployments, reorganization/confirmation checks, and invalid public deployment imports. Browser checks exercise successful recovery with an unavailable guardian, owner cancellation, reload, kit import, receipts, and desktop/mobile layouts.
+The contract tests run transactions against a separate EVM on port 18545. Crypto tests cover exact byte recovery, duplicate/insufficient shares, mixed requests, wrong recipients, and tampering. Storage and protocol tests cover concurrency, deployment-scoped evidence, preserved registration packages, replaced deployments, reorganization/confirmation checks, and invalid public deployment imports. The PDF verifier tests cover signature tampering, incomplete coverage, multiple signatures, revocation, and unapproved issuers. Browser checks exercise successful recovery with an unavailable guardian, owner cancellation, reload, kit import, receipts, and desktop/mobile layouts.
 
 ## Threat model and current limits
 
