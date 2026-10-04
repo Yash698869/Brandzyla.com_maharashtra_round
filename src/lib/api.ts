@@ -1,14 +1,12 @@
 import type { Config, ProtectedPackage, IdentityRecord, ShareRelease } from './types';
 import type { RecoveryKit } from './registration';
 
-let cachedToken: string | null = null;
-
-export function setApiAuthToken(token: string | null) {
-  cachedToken = token;
-}
-
 export function getApiAuthToken(): string | null {
-  return cachedToken || (typeof localStorage !== 'undefined' ? localStorage.getItem('heirloom_auth_token') : null);
+  try {
+    return sessionStorage.getItem('heirloom_auth_token');
+  } catch {
+    return null;
+  }
 }
 
 export async function request<T>(path: string, body?: unknown, customToken?: string): Promise<T> {

@@ -25,6 +25,8 @@ npm run demo
 
 Open [Heirloom](http://127.0.0.1:5173). Keep the terminal running. The command starts Hardhat at port 8545 (chain ID 31337), deploys Heirloom, starts the encrypted relay at port 3001, and serves the UI at port 5173. Choose an actor from the demo switcher; the app signs transactions with that actor's funded Hardhat account. Click **Load sample vaults** to create three encrypted assets with real local Ethereum transactions. Open **Activity log** and select an event to show its receipt, block number, and gas used.
 
+For a multi-role walkthrough, open the app in separate tabs and sign in as the owner, beneficiary, and two guardians, one account per tab. Signing in, switching demo actors, or signing out in one tab leaves the other tabs' sessions intact. A duplicated tab may initially copy its source tab's session; sign out in the duplicate before choosing another account.
+
 Before presenting, run `npm run demo:check` in a second terminal. It confirms the app and relay are responding, all six demo wallets can sign and have local ETH, and the deployed contract still matches its receipt and bytecode. The sample vaults configure a backup. Use **Skip inactivity**, **Skip backup waiting**, and **Skip challenge** in a vault's local demo controls to exercise both paths.
 
 The local chain is ephemeral. Stopping its process loses chain state. Browser keys and relay ciphertext persist, but ciphertext alone cannot restore a lost blockchain. A new deployment gets a distinct custody namespace. Do not clear browser site data during the demo. Local transaction hashes are verifiable through the running Hardhat node; they do not have public Etherscan pages.
