@@ -21,6 +21,23 @@ In a second terminal, run `npm run demo:check` immediately before judges arrive.
 7. **Prove intervention.** Open a different protected vault, skip inactivity, request as Sam, and approve as Maya. Switch to Alex and click **I’m here — cancel recovery**. The vault becomes protected again and its effective quorum returns to zero.
 8. **Show evidence.** Open **Activity log** and a transaction row. Show the confirmed receipt, block, gas used, actor, and contract address. The network badge identifies Hardhat and chain 31337. Explain that this proof is on the live local chain, so its hashes do not have public Etherscan links.
 
+## Optional signed-PDF evidence demonstration
+
+Install the pinned Python verifier dependencies, then generate and smoke-check the fictional test certificate before the judges arrive:
+
+```powershell
+python -m pip install -r verifier/requirements.txt
+npm run evidence:fixture
+npm run evidence:check -- .runtime/evidence-demo/signed.pdf
+npm run evidence:smoke
+```
+
+The fixture's only identity values are **Demo Person** and **DEMO-042**. Start with a fresh active vault before any recovery request. As the owner, enroll those exact fictional values in **Certificate identity** and sign the commitment with the owner actor. As Sam, request recovery. Before any guardian approval, switch to a designated guardian, upload `.runtime/evidence-demo/signed.pdf`, and show the separate signature, final-file coverage, chain, revocation, issuer, signed fields, and owner identity checks. The green result says **DEMO / NOT GOVERNMENT EVIDENCE**. Evidence does not count as an approval and cannot advance the contract; proceed with the normal two guardian approvals and cancellation window. Never enter a real person's sensitive identifier for this demo.
+
+The smoke run creates `.runtime/evidence-demo/tampered.pdf` by changing one byte in a signed range and confirms that the signature check fails. The terminal-only `evidence:check` output omits identity claims and marks owner identity as not checked; matching happens only in the authenticated guardian upload flow. The relay does not retain the PDF or extracted fields.
+
+This does not verify a real DigiLocker/CRS document. There is no genuine specimen to establish its signature format, signer fingerprint, or field layout. The issuer profile, official trust-anchor fingerprint, signer scope, and current CRL/OCSP sources still need independent confirmation and tests against a genuine certificate. A QR-only or unsigned document is unsupported and must fail closed.
+
 ## Questions worth answering directly
 
 **Why blockchain?** The contract enforces authorization, timing and events, with no platform admin who can override it. On Hardhat, judges can verify those rules and receipts against the local node. A public deployment would make them independently visible on a block explorer. Asset confidentiality comes from encryption and distributed custody.
@@ -31,7 +48,7 @@ In a second terminal, run `npm run demo:check` immediately before judges arrive.
 
 **Can guardians collude?** A sufficient two-guardian quorum can collude off-chain. Heirloom minimizes single-party trust; it does not eliminate threshold collusion or prove death automatically.
 
-**What would you build next?** New public-mode identities now have an encrypted backup and restore flow. The next steps are separate-device custody, hosted ciphertext replication, guardian rotation, notification delivery, legal evidence adapters, and an external security review. Existing local demo identities are unbacked legacy keys.
+**What would you build next?** New public-mode identities now have an encrypted backup and restore flow. The next steps are separate-device custody, hosted ciphertext replication, guardian rotation, notification delivery, a genuine DigiLocker/CRS issuer profile based on an authentic sample, and an external security review. Existing local demo identities are unbacked legacy keys.
 
 ## Closing — 15 seconds
 

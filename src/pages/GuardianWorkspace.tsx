@@ -23,6 +23,7 @@ import {
 import { Brand } from '../components/Brand';
 import UserMenu from '../components/UserMenu';
 import { RecoveryPolicyStatus } from '../components/SuccessionGraph';
+import EvidenceReview from '../components/EvidenceReview';
 import { isBeneficiary, selectedRecipient } from '../lib/workspace-policy';
 import { useRouter } from '../lib/router';
 import type { Config, Actor, Vault, TimelineEvent, IdentityRecord } from '../lib/types';
@@ -362,6 +363,7 @@ export default function GuardianWorkspace({
                           <span>Challenge window: {duration(v.state.challenge)}</span>
                         </div>
                         <RecoveryPolicyStatus vault={v} time={time} block={block} offline={offline} nameOf={nameOf}/>
+                        <EvidenceReview key={`${v.state.id}:${v.state.requestId}`} vault={v} disabled={!!busy || offline}/>
                       </div>
 
                       <div className="attestation-card-actions">

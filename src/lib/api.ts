@@ -1,5 +1,6 @@
-import type { Config, ProtectedPackage, IdentityRecord, ShareRelease } from './types';
+import type { Config, ProtectedPackage, IdentityRecord, ShareRelease, EvidenceEnrollmentPayload, EvidenceReceiptResponse } from './types';
 import type { RecoveryKit } from './registration';
+import { validateEvidenceFile } from './evidence';
 
 export function getApiAuthToken(): string | null {
   try {
@@ -47,6 +48,20 @@ export async function request<T>(path: string, body?: unknown, customToken?: str
   return data as T;
 }
 
+async function uploadEvidence(vaultId: string, file: File): Promise<EvidenceReceiptResponse> {
+  validateEvidenceFile(file);
+  const token = getApiAuthToken();
+  let response: Response;
+  try {
+    response = await fetch(`/api/evidence/${vaultId}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/pdf', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: file
+    });
+  } catch { throw new Error('Evidence relay is unreachable. Check the connection and retry.'); }
+  const data = await response.json().catch(() => ({ error: `Evidence relay returned HTTP ${response.status}` }));
+  if (!response.ok) throw new Error(typeof data?.error === 'string' ? data.error : `Evidence upload failed (HTTP ${response.status})`);
+  return data as EvidenceReceiptResponse;
+}
+
 export const api = {
   config: () => request<Config & { blockTimestamp: number; blockNumber: number }>('config'),
   identities: () => request<IdentityRecord[]>('identities'),
@@ -56,6 +71,10 @@ export const api = {
   savePackage: (p: ProtectedPackage) => request('packages', { package: p }),
   releases: (id: string) => request<{ release: ShareRelease; signature: string }[]>(`releases/${id}`),
   release: (release: ShareRelease, signature: string) => request('releases', { release, signature }),
+  evidenceEnrollment: (vaultId: string) => request<{ enrolled: boolean; vaultId: string }>(`evidence/${vaultId}/enrollment`),
+  enrollEvidence: (vaultId: string, record: EvidenceEnrollmentPayload) => request<{ enrolled: boolean; vaultId: string }>(`evidence/${vaultId}/enrollment`, record),
+  evidenceReceipt: (vaultId: string) => request<EvidenceReceiptResponse>(`evidence/${vaultId}`),
+  uploadEvidence,
   clock: (seconds: number) => request('clock', { seconds }),
   sendOtp: (email: string) =>
     request<{ ok: boolean; message: string; devCode?: string; devNotice?: string }>('auth/send-otp', { email }),

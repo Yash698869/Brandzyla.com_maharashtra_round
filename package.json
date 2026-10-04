@@ -19,11 +19,15 @@
     "deploy": "node scripts/deploy.mjs",
     "build": "node scripts/compile.mjs && tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "npm run test:contract && npm run test:crypto && npm run test:relay",
+    "test": "npm run test:contract && npm run test:crypto && npm run test:relay && npm run test:evidence",
     "test:contract": "node --test tests/contract.test.mjs",
-    "test:crypto": "vitest run src/lib/crypto.test.ts src/lib/registration.test.ts src/lib/identity.test.ts src/lib/identity-backup.test.ts src/lib/custody-flow.test.ts src/lib/recovery.test.ts src/lib/api.test.ts src/lib/wallet-events.test.ts src/lib/workspace-policy.test.ts src/components/SuccessionGraph.test.tsx tests/succession-e2e.test.ts src/lib/auth.test.ts",
+    "test:crypto": "vitest run src/lib/crypto.test.ts src/lib/registration.test.ts src/lib/identity.test.ts src/lib/identity-backup.test.ts src/lib/custody-flow.test.ts src/lib/recovery.test.ts src/lib/api.test.ts src/lib/wallet-events.test.ts src/lib/workspace-policy.test.ts src/components/SuccessionGraph.test.tsx tests/succession-e2e.test.ts src/lib/auth.test.ts src/lib/evidence.test.ts src/components/EvidenceFlow.test.tsx",
     "test:auth": "node --test tests/auth.test.mjs",
-    "test:relay": "node --test tests/relay.test.mjs tests/relay-api.test.mjs tests/chain-safety.test.mjs tests/sepolia-deployment.test.mjs tests/auth.test.mjs"
+    "test:relay": "node --test tests/relay.test.mjs tests/relay-api.test.mjs tests/chain-safety.test.mjs tests/sepolia-deployment.test.mjs tests/auth.test.mjs tests/evidence-identity.test.mjs tests/evidence-storage.test.mjs tests/evidence-api.test.mjs",
+    "test:evidence": "python -m unittest discover -s verifier/tests -v",
+    "evidence:fixture": "python scripts/generate-evidence-demo.py",
+    "evidence:check": "node scripts/check-evidence-pdf.mjs",
+    "evidence:smoke": "node scripts/check-evidence-demo.mjs"
   },
   "dependencies": {
     "ethers": "^6.15.0",

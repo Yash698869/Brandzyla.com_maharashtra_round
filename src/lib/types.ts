@@ -10,3 +10,12 @@ export interface VaultState { id: string; owner: string; beneficiary: string; gu
 export interface Vault { package: ProtectedPackage; state: VaultState; label: string; category: string; createdAt: number }
 export interface TimelineEvent { name: string; vaultId: string; requestId?: number; actor?: string; hash: string; blockNumber: number; timestamp: number; count?: number }
 export interface IdentityRecord { address: string; publicKey: JsonWebKey; signature: string; name?: string; role?: string }
+export type EvidenceCheck = 'pass' | 'fail' | 'indeterminate';
+export type EvidenceStatus = 'government_issuer_verified' | 'test_issuer_verified' | 'signed_issuer_unverified' | 'indeterminate' | 'failed';
+export interface EvidenceEnrollmentPayload { owner: string; commitment: string; saltHex: string; signature: string }
+export interface EvidenceReceipt {
+  vaultId: string; requestId: number; pdfSha256: string; status: EvidenceStatus;
+  checks: { signature: EvidenceCheck; coverage: EvidenceCheck; chain: EvidenceCheck; revocation: EvidenceCheck; issuer: EvidenceCheck; fields: EvidenceCheck; identity: EvidenceCheck };
+  signerFingerprint: string | null; issuerLabel: string; reasonCodes: string[]; verifiedAt: number;
+}
+export interface EvidenceReceiptResponse { receipt: EvidenceReceipt | null; historical: EvidenceReceipt | null }

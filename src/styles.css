@@ -2785,3 +2785,28 @@
   .create-form .form-row { grid-template-columns: 1fr; gap: 0; }
 }
 
+/* Signed certificate evidence */
+.evidence-enrollment-list{display:grid;gap:12px;margin-top:22px}
+.evidence-panel{background:#fff;border:1px solid #e3e6dc;border-radius:12px;padding:18px;margin-top:14px;box-shadow:0 3px 12px rgba(42,51,36,.03)}
+.evidence-heading{display:flex;gap:10px;align-items:flex-start;color:#6f6389}
+.evidence-heading h3,.evidence-heading h4{font-family:Manrope,sans-serif;font-size:13px;color:#343b32;margin:0 0 4px}
+.evidence-heading p,.evidence-muted{font-size:11px;line-height:1.5;color:#797f74}
+.evidence-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:16px}
+.evidence-form label,.evidence-upload label{display:grid;gap:6px;font-size:11px;font-weight:650;color:#4b5547}
+.evidence-form input,.evidence-upload input{max-width:100%;min-width:0;border:1px solid #dfe4d8;border-radius:7px;padding:9px;background:#fff;color:#30372d}
+.evidence-form p{grid-column:1/-1}.evidence-form button{justify-self:start}
+.evidence-good{display:flex;gap:8px;align-items:center;margin-top:12px;font-size:11px;color:#4f7655}
+.evidence-error{margin-top:10px;font-size:11px;color:#a74944}
+.evidence-review{background:#fbfcf8;margin:14px 0 0;box-shadow:none}
+.evidence-upload{display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin-top:14px}
+.evidence-upload label{flex:1;min-width:180px}.evidence-upload button{display:flex;align-items:center;gap:6px}
+.evidence-receipt{margin-top:14px;border:1px solid #e0e5dc;border-radius:9px;padding:13px;background:#fff;font-size:11px;line-height:1.5}
+.evidence-receipt-title{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:8px}
+.evidence-receipt-title strong{font-family:Manrope,sans-serif;font-size:12px}.evidence-receipt-title span,.evidence-digest{font-size:10px;color:#81897b}
+.evidence-test_issuer_verified{border-color:#b7d1bb}.evidence-failed{border-color:#e2bdb8}.evidence-indeterminate,.evidence-signed_issuer_unverified{border-color:#e6d7aa}
+.evidence-demo-mark{display:inline-block;background:#fff2d7;color:#8c6526;padding:4px 7px;border-radius:5px;font-size:9px;font-weight:800;letter-spacing:.3px;margin:2px 0 9px}
+.evidence-check-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px 14px;margin:12px 0}
+.evidence-check-grid>div{display:flex;justify-content:space-between;gap:8px;border-bottom:1px solid #f0f2ec;padding-bottom:5px}
+.evidence-check-pass{color:#4d8055}.evidence-check-fail{color:#ab4e48}.evidence-check-indeterminate{color:#9a7938}
+@media(max-width:650px){.evidence-form,.evidence-check-grid{grid-template-columns:1fr}}
+
