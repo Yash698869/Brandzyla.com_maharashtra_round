@@ -16,10 +16,11 @@ Captured during a local EVM rehearsal. The vault dashboard shows the live demo s
 
 ## Run the working demo
 
-Requires Node.js 22 and npm. Hardhat supplies six funded development wallets (owner, primary, backup, three guardians) on a local Ethereum chain. You do not need MetaMask, Sepolia test ETH, or a faucet for this demo. From this directory:
+Requires Node.js 22 and npm. The certificate-evidence verifier also requires Python 3.13 and its pinned dependencies. Hardhat supplies six funded development wallets (owner, primary, backup, three guardians) on a local Ethereum chain. You do not need MetaMask, Sepolia test ETH, or a faucet for this demo. From this directory:
 
 ```powershell
 npm ci
+python -m pip install -r verifier/requirements.txt
 npm run demo
 ```
 
@@ -30,6 +31,24 @@ Before presenting, run `npm run demo:check` in a second terminal. It confirms th
 The local chain is ephemeral. Stopping its process loses chain state. Browser keys and relay ciphertext persist, but ciphertext alone cannot restore a lost blockchain. A new deployment gets a distinct custody namespace. Do not clear browser site data during the demo. Local transaction hashes are verifiable through the running Hardhat node; they do not have public Etherscan pages.
 
 Read the [three-minute judging walkthrough](docs/DEMO.md) and [public deployment instructions](docs/SEPOLIA.md).
+
+## Death-certificate evidence demo
+
+The guardian workspace can display a check-by-check receipt for a signed PDF. The included `test-local` issuer is synthetic and must always be presented as **DEMO / NOT GOVERNMENT EVIDENCE**. It is not connected to DigiLocker, CRS, a government registry, or a government certificate authority. The uploaded PDF and extracted identity fields are checked transiently; the relay stores only a PDF digest and sanitized, request-bound check results.
+
+Generate a disposable synthetic certificate and run the byte-tamper smoke check before judging:
+
+```powershell
+npm run evidence:fixture
+npm run evidence:check -- .runtime/evidence-demo/signed.pdf
+npm run evidence:smoke
+```
+
+The fixture uses the fictional identity **Demo Person / DEMO-042**. Its private signing key is removed after generation, and all generated files are under ignored `.runtime/`. The check command prints signature, final-file coverage, certificate-chain, revocation, issuer, and field results as JSON. Its offline output explicitly says owner identity was not checked; that comparison happens in the guardian upload flow against the owner's signed enrollment. The smoke command verifies the generated PDF, changes one signed byte, and confirms that the altered PDF fails.
+
+For the workspace demonstration, enroll a fresh active vault before requesting recovery using the fixture's fictional name and identifier. After a recovery request starts, a designated guardian uploads `.runtime/evidence-demo/signed.pdf` and reviews the receipt. The evidence upload does not count as a guardian approval or advance the contract; the existing two-of-three approvals, owner challenge window, and on-chain finalization still control release. Do not enter a real person's sensitive identifier for this demo.
+
+Real India DigiLocker/CRS verification remains pending. No genuine signed death-certificate sample was available to confirm whether the issuer provides a PDF signature or only a QR/portal proof, the certificate-field layout, or the signer identity. Before enabling a government result, a real specimen must validate the exact issuer profile and field parser; the CCA trust-anchor fingerprint and permitted signer identities must also be confirmed independently through official channels, and current profile-approved CRL/OCSP evidence must be verified. A CCA root by itself does not identify a government death-certificate signer. Until all those checks are implemented and tested, the app cannot report **Government issuer verified**. See the [CCA root-certificate guidance](https://cca.gov.in/root_certificate.html), [CCA signature-verification guidance](https://cca.gov.in/signature_verification.html), and [DigiLocker verification circular](https://cdn.digilocker.gov.in/assets/img/circulars/Letter-to-All-State-Governments-UTs.pdf).
 
 Separate-device custody and portable identity backup are design work, not current demo capabilities. See the [hosted relay design](docs/SEPARATE-DEVICE.md) and [identity backup design](docs/IDENTITY-BACKUP.md).
 
@@ -99,6 +118,7 @@ Heirloom provides three tailored, distinct workspaces for the three kinds of peo
 - Distinct owner, primary, optional backup, and three guardians. No admin, upgrade, token, or custody of cryptocurrency funds.
 - Per-vault inactivity, challenge and backup waiting durations; selected-beneficiary finalization, guardian-only approvals, and owner cancellation before finalization. The owner workspace includes a responsive Succession Graph showing chain-confirmed policy and request state.
 - Live inactivity, backup waiting, and owner challenge countdowns tick between block updates. They project from the latest block timestamp; the contract checks eligibility again when an action is submitted.
+- Signed-PDF evidence receipts show separate signature, final-file coverage, trust-chain, revocation, issuer, signed-field, and owner-identity results for guardians. The local test issuer is clearly labeled and does not replace guardian approval.
 - Wallet-signed identity enrollment and share delivery. Deployment, vault, beneficiary key, and current request are verified before release/decryption.
 - Immutable encrypted package commitments, event history, real transaction receipts, searchable vaults, and responsive UI.
 - Encrypted recovery-kit export/import; unfinished registration packages are saved in IndexedDB before broadcasting and reconciled after reload.
@@ -141,7 +161,7 @@ New public identities briefly export their private key during creation to encryp
 
 Addresses, timing, and events are public metadata. Vault labels/categories are stored only in local browser storage and are not encrypted. Each registered policy is fixed; create a new vault to change it. Finalization is irreversible; a cancellation race is decided by transaction ordering. Three confirmations reduce reorganization risk and do not eliminate it. RPC failure prevents safe release rather than bypassing authorization.
 
-This is not audited production custody or a legal inheritance service. Use sample assets for judging. Wallet-fund transfers, legal evidence verification, notifications, monitoring services, replication, and device recovery are outside this first-round build.
+This is not audited production custody or a legal inheritance service. Use sample assets for judging. Government death-certificate verification remains unavailable until the real DigiLocker/CRS signer profile and field parsing are validated against a genuine specimen. Wallet-fund transfers, notifications, monitoring services, replication, and device recovery are outside this first-round build.
 
 ## Sources
 

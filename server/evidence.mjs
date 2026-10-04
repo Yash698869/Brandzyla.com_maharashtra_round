@@ -22,9 +22,11 @@ const same = (a, b) => typeof a === 'string' && typeof b === 'string' && a.toLow
 
 export async function runPdfVerifier(path, profileId, signal) {
   const executable = process.env.HEIRLOOM_PYTHON || 'python';
+  const testProfile = process.env.HEIRLOOM_TEST_EVIDENCE_PROFILE || join(projectRoot, '.runtime', 'evidence-demo', 'profile.json');
   return new Promise((resolveResult, reject) => {
     const child = spawn(executable, ['-m', 'verifier.verify_pdf', '--input', path, '--profile', profileId], {
-      cwd: projectRoot, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'], signal
+      cwd: projectRoot, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'], signal,
+      env: { ...process.env, HEIRLOOM_TEST_EVIDENCE_PROFILE: testProfile }
     });
     let output = '';
     child.stdout.setEncoding('utf8');
