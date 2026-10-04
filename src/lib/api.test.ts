@@ -1,11 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api, request, setApiAuthToken } from './api';
+import { api, request } from './api';
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe('certificate upload', () => {
   it('sends raw PDF bytes with the live session token', async () => {
-    setApiAuthToken('guardian-session');
+    const session = new Map<string, string>();
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key: string) => session.get(key) ?? null,
+      setItem: (key: string, value: string) => session.set(key, value),
+      removeItem: (key: string) => session.delete(key),
+    });
+    sessionStorage.setItem('heirloom_auth_token', 'guardian-session');
     const fetcher = vi.fn(async (_url: string, _init?: RequestInit) => new Response('{"receipt":null}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
     vi.stubGlobal('fetch', fetcher);
     await api.uploadEvidence('vault-id', new Blob(['%PDF-1.4'], { type: 'application/pdf' }) as File);
@@ -16,7 +22,7 @@ describe('certificate upload', () => {
     expect(headers.Authorization).toBe('Bearer guardian-session');
     expect(headers['Content-Type']).toBe('application/pdf');
     expect(init!.body).toBeInstanceOf(Blob);
-    setApiAuthToken(null);
+    sessionStorage.removeItem('heirloom_auth_token');
   });
 
   it('rejects an oversized PDF without making a network call', async () => {
