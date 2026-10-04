@@ -132,6 +132,7 @@ function AppContent() {
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
   const [time, setTime] = useState(0);
+  const chainClock = useRef<{ timestamp: number; observedAtMs: number } | null>(null);
   const [block, setBlock] = useState(0);
   const [releaseCount, setReleaseCount] = useState<Record<string, number>>({});
   const [releaseGuardians, setReleaseGuardians] = useState<Record<string, string[]>>({});
@@ -208,6 +209,20 @@ function AppContent() {
       history(c, clock.blockNumber),
       api.identities(),
     ]);
+    const previousClock = chainClock.current;
+    if (!previousClock || clock.observedAtMs >= previousClock.observedAtMs) {
+      const previousAtObservation = previousClock
+        ? previousClock.timestamp + Math.max(0, clock.observedAtMs - previousClock.observedAtMs) / 1000
+        : 0;
+      chainClock.current = {
+        timestamp: Math.max(clock.timestamp, previousAtObservation),
+        observedAtMs: clock.observedAtMs,
+      };
+    }
+    const clockAnchor = chainClock.current;
+    const projectedTime = clockAnchor
+      ? Math.floor(clockAnchor.timestamp + Math.max(0, Date.now() - clockAnchor.observedAtMs) / 1000)
+      : clock.timestamp;
     const meta = JSON.parse(localStorage.getItem(metadataKey(c)) ?? '{}');
     const loaded = await Promise.all(
       packages.map(async p => {
@@ -228,7 +243,7 @@ function AppContent() {
     );
     setVaults(loaded.filter((v): v is Vault => !!v));
     setEvents(timeline);
-    setTime(clock.timestamp);
+    setTime(currentTime => Math.max(currentTime, projectedTime));
     setBlock(clock.blockNumber);
     setIdentities(enrolled);
     const deliveries: Record<string, string[]> = {};
@@ -324,6 +339,19 @@ function AppContent() {
     const timer = setInterval(() => refresh(config).catch(() => setOffline(true)), 6000);
     return () => clearInterval(timer);
   }, [config, boot, actor, refresh]);
+
+  useEffect(() => {
+    if (!config || boot || (config.mode === 'public' && !actor)) return;
+    const timer = setInterval(() => {
+      const clockAnchor = chainClock.current;
+      if (!clockAnchor) return;
+      const projectedTime = Math.floor(
+        clockAnchor.timestamp + Math.max(0, Date.now() - clockAnchor.observedAtMs) / 1000
+      );
+      setTime(currentTime => Math.max(currentTime, projectedTime));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [config, boot, actor]);
 
   useEffect(() => {
     if (config?.mode !== 'public') return;

@@ -51,7 +51,16 @@ export async function getVault(config: Config, id: string, blockTag?: number): P
   return { id, owner: v.owner, beneficiary: v.beneficiary, guardians, inactivity: Number(v.inactivity), challenge: Number(v.challenge), lastCheckIn: Number(v.lastCheckIn), quorumAt: Number(v.quorumAt), finalizedAt: Number(v.finalizedAt), requestId: Number(v.requestId), approvalCount: Number(v.approvalCount), status: Number(v.status), commitment: v.commitment, beneficiaryKeyHash: v.beneficiaryKeyHash, approved,
     policyVersion: Number(v.policyVersion ?? 1), backupBeneficiary: v.backupBeneficiary, backupWaitingDuration: Number(v.backupWaitingDuration ?? 0), backupBeneficiaryKeyHash: v.backupBeneficiaryKeyHash, selectedBeneficiary: v.selectedBeneficiary ?? (Number(v.status) !== 0 ? v.beneficiary : undefined) };
 }
-export async function chainTime(config?: Config) { const tip = await readProvider.getBlockNumber(); const blockNumber = tip - (config?.confirmations ?? 1) + 1; if (blockNumber < (config?.deploymentBlock ?? 0)) throw new Error('Wait for deployment confirmations'); const block = await readProvider.getBlock(blockNumber); if (!block) throw new Error('Chain unavailable'); return { timestamp: block.timestamp, blockNumber: block.number }; }
+export async function chainTime(config?: Config) {
+  const latestBlock = await readProvider.getBlock('latest');
+  if (!latestBlock) throw new Error('Chain unavailable');
+  const observedAtMs = Date.now();
+  const blockNumber = latestBlock.number - (config?.confirmations ?? 1) + 1;
+  if (blockNumber < (config?.deploymentBlock ?? 0)) throw new Error('Wait for deployment confirmations');
+  const confirmedBlock = await readProvider.getBlock(blockNumber);
+  if (!confirmedBlock) throw new Error('Chain unavailable');
+  return { timestamp: latestBlock.timestamp, blockNumber: confirmedBlock.number, observedAtMs };
+}
 export async function history(config: Config, blockTag?: number): Promise<TimelineEvent[]> {
   const contract = readContract(config);
   const logs = await contract.queryFilter('*', config.deploymentBlock, blockTag ?? (await chainTime(config)).blockNumber);

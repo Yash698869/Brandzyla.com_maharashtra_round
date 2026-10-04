@@ -47,7 +47,7 @@ The import command defaults to your Windows Downloads folder. For another locati
 
 The public app opens at [port 5174](http://127.0.0.1:5174), with a separate relay on port 3002. The local rehearsal stays running at port 5173. No demo accounts or clock fast-forwarding exist in public mode. Public recovery releases require three confirmations. Public deployment is pending until a funded wallet signs it; a local EVM is not a decentralized public network.
 
-New public-mode wallet enrollments create a passphrase-encrypted **identity backup** file. Download it, reselect it to verify restoration, then sign enrollment. To restore in another browser profile, connect the same wallet address and choose **Restore identity** with that file and passphrase. Each of the five roles can use a separate browser profile on the same PC; that separates browser key storage, but does not prove independent devices or people. The asset recovery kit is a different file and does not contain the browser identity key.
+New public-mode wallet enrollments create a passphrase-encrypted **identity backup** file. Download it, reselect it to verify restoration, then sign enrollment. To restore in another browser profile, connect the same wallet address and choose **Restore identity** with that file and passphrase. Each participant can use a separate browser profile on the same PC; that separates browser key storage, but does not prove independent devices or people. The asset recovery kit is a different file and does not contain the browser identity key.
 
 ## Three Distinct Workspaces & Role-Based Routing
 
@@ -58,7 +58,7 @@ Heirloom provides three tailored, distinct workspaces for the three kinds of peo
    - **Key Views**:
      - *My Vaults*: Browse encrypted assets, check-in intervals, and guardian quorum policies.
      - *Check-In Manager*: Table of all owned vaults showing inactivity deadlines, challenge status, and one-click check-in.
-     - *Activity Log*: On-chain transaction receipts for vault creation, check-ins, and policy updates.
+     - *Activity Log*: On-chain transaction receipts for vault registration, check-ins, recovery requests, guardian approvals, cancellation, and finalization.
      - *Prominent Recovery Challenge Alert*: When guardians reach quorum to attest incapacity, a prominent banner appears alerting the owner, with an immediate "I'm Here — Cancel Recovery" action to stop the claim within the challenge period.
 
 2. **Beneficiary Workspace (`/beneficiary`)**:
@@ -97,11 +97,14 @@ Heirloom provides three tailored, distinct workspaces for the three kinds of peo
 - File or note encryption with AES-256-GCM; file name, MIME type, and contents are encrypted. Maximum file size: 5 MB.
 - Two-of-three Shamir sharing using Privy's existing library. RSA-OAEP identities wrap fresh AES share-envelope keys.
 - Distinct owner, primary, optional backup, and three guardians. No admin, upgrade, token, or custody of cryptocurrency funds.
-- Per-vault inactivity, challenge and backup waiting durations; selected-beneficiary finalization, guardian-only approvals, and owner cancellation before finalization. The owner workspace includes a responsive Succession Graph based on confirmed chain state.
+- Per-vault inactivity, challenge and backup waiting durations; selected-beneficiary finalization, guardian-only approvals, and owner cancellation before finalization. The owner workspace includes a responsive Succession Graph showing chain-confirmed policy and request state.
+- Live inactivity, backup waiting, and owner challenge countdowns tick between block updates. They project from the latest block timestamp; the contract checks eligibility again when an action is submitted.
 - Wallet-signed identity enrollment and share delivery. Deployment, vault, beneficiary key, and current request are verified before release/decryption.
 - Immutable encrypted package commitments, event history, real transaction receipts, searchable vaults, and responsive UI.
 - Encrypted recovery-kit export/import; unfinished registration packages are saved in IndexedDB before broadcasting and reconciled after reload.
 - Non-extractable browser identity keys, passphrase-encrypted backup/restore for newly enrolled public identities, atomic custody creation across tabs, stale-network indicators, and bounded transaction waits.
+
+See the [Succession Graph and version-1 compatibility guide](docs/succession-graph.md) and its [verification report](docs/succession-verification.md) for policy details and deployment guidance.
 
 ## Architecture
 
