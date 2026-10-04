@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import pg from 'pg';
 
 const { Pool } = pg;
@@ -116,7 +117,17 @@ export class PostgresStorage {
           "createdAt" BIGINT NOT NULL DEFAULT 0,
           PRIMARY KEY ("vaultId", guardian, "requestId")
         )`,
-        `CREATE INDEX IF NOT EXISTS idx_releases_vault_id ON releases ("vaultId")`
+        `CREATE INDEX IF NOT EXISTS idx_releases_vault_id ON releases ("vaultId")`,
+        `CREATE TABLE IF NOT EXISTS evidence_enrollments (
+          "vaultId" TEXT PRIMARY KEY,
+          payload JSONB NOT NULL
+        )`,
+        `CREATE TABLE IF NOT EXISTS evidence_receipts (
+          "vaultId" TEXT NOT NULL,
+          "requestId" BIGINT NOT NULL,
+          payload JSONB NOT NULL,
+          PRIMARY KEY ("vaultId", "requestId")
+        )`
       ];
 
       for (const statement of statements) {
@@ -272,6 +283,37 @@ export class PostgresStorage {
     );
   }
 
+  async getEvidenceEnrollment(vaultId) {
+    const res = await this.pool.query('SELECT payload FROM evidence_enrollments WHERE LOWER("vaultId") = LOWER($1)', [vaultId.trim()]);
+    return res.rows[0] ? mapPackageRow(res.rows[0]) : null;
+  }
+
+  async saveEvidenceEnrollment(vaultId, record) {
+    const cleanVaultId = vaultId.trim().toLowerCase();
+    await this.pool.query(
+      'INSERT INTO evidence_enrollments ("vaultId", payload) VALUES ($1, $2) ON CONFLICT ("vaultId") DO NOTHING',
+      [cleanVaultId, JSON.stringify(record)]
+    );
+    const saved = await this.getEvidenceEnrollment(cleanVaultId);
+    if (!isDeepStrictEqual(saved, record)) throw new Error('Evidence identity is already enrolled and immutable');
+  }
+
+  async getEvidenceReceipt(vaultId, requestId) {
+    const res = await this.pool.query(
+      'SELECT payload FROM evidence_receipts WHERE LOWER("vaultId") = LOWER($1) AND "requestId" = $2',
+      [vaultId.trim(), Number(requestId)]
+    );
+    return res.rows[0] ? mapPackageRow(res.rows[0]) : null;
+  }
+
+  async saveEvidenceReceipt(vaultId, requestId, receipt) {
+    await this.pool.query(
+      `INSERT INTO evidence_receipts ("vaultId", "requestId", payload) VALUES ($1, $2, $3)
+       ON CONFLICT ("vaultId", "requestId") DO UPDATE SET payload = EXCLUDED.payload`,
+      [vaultId.trim().toLowerCase(), Number(requestId), JSON.stringify(receipt)]
+    );
+  }
+
   async close() {
     await this.pool.end();
   }
@@ -284,7 +326,7 @@ export class FileStorage {
     this.options = options;
     const deploymentId = options.deploymentId || '0x0000000000000000';
     this.file = options.file || `.runtime/relay-${deploymentId.slice(2, 18)}.json`;
-    this.data = { identities: {}, packages: {}, releases: {}, users: {}, sessions: {} };
+    this.data = { identities: {}, packages: {}, releases: {}, users: {}, sessions: {}, evidenceEnrollments: {}, evidenceReceipts: {} };
   }
 
   async init() {
@@ -302,6 +344,8 @@ export class FileStorage {
     if (!data.releases) data.releases = {};
     if (!data.users) data.users = {};
     if (!data.sessions) data.sessions = {};
+    if (!data.evidenceEnrollments) data.evidenceEnrollments = {};
+    if (!data.evidenceReceipts) data.evidenceReceipts = {};
 
     const dir = dirname(file);
     if (existsSync(dir) && (!Object.keys(data.users).length || !Object.keys(data.sessions).length)) {
@@ -434,6 +478,29 @@ export class FileStorage {
     }
     const nextReleases = { ...(this.data.releases || {}), [cleanVaultId]: nextEntries };
     this.save({ ...this.data, releases: nextReleases });
+  }
+
+  async getEvidenceEnrollment(vaultId) {
+    return this.data.evidenceEnrollments?.[vaultId.trim().toLowerCase()] ?? null;
+  }
+
+  async saveEvidenceEnrollment(vaultId, record) {
+    const key = vaultId.trim().toLowerCase();
+    const prior = this.data.evidenceEnrollments?.[key];
+    if (prior) {
+      if (!isDeepStrictEqual(prior, record)) throw new Error('Evidence identity is already enrolled and immutable');
+      return;
+    }
+    this.save({ ...this.data, evidenceEnrollments: { ...this.data.evidenceEnrollments, [key]: record } });
+  }
+
+  async getEvidenceReceipt(vaultId, requestId) {
+    return this.data.evidenceReceipts?.[`${vaultId.trim().toLowerCase()}:${Number(requestId)}`] ?? null;
+  }
+
+  async saveEvidenceReceipt(vaultId, requestId, receipt) {
+    const key = `${vaultId.trim().toLowerCase()}:${Number(requestId)}`;
+    this.save({ ...this.data, evidenceReceipts: { ...this.data.evidenceReceipts, [key]: receipt } });
   }
 
   async close() {
