@@ -1,6 +1,6 @@
 import { connectWallet, signerFor } from './chain';
 import { obtainIdentity } from './identity';
-import { api, setApiAuthToken } from './api';
+import { api } from './api';
 import { identityMessage } from '../../shared/protocol.mjs';
 import type { Config, Actor } from './types';
 
@@ -19,9 +19,24 @@ export interface UserAccount {
 const AUTH_TOKEN_KEY = 'heirloom_auth_token';
 const SESSION_USER_KEY = 'heirloom_session_user';
 
+// Move a pre-existing shared login into one tab, then remove the shared copy.
+function migrateLegacySession() {
+  try {
+    const legacyToken = localStorage.getItem(AUTH_TOKEN_KEY);
+    if (legacyToken && !sessionStorage.getItem(AUTH_TOKEN_KEY)) {
+      sessionStorage.setItem(AUTH_TOKEN_KEY, legacyToken);
+      const legacyUser = localStorage.getItem(SESSION_USER_KEY);
+      if (legacyUser) sessionStorage.setItem(SESSION_USER_KEY, legacyUser);
+    }
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    localStorage.removeItem(SESSION_USER_KEY);
+  } catch {}
+}
+
 export function getAuthToken(): string | null {
   try {
-    return localStorage.getItem(AUTH_TOKEN_KEY);
+    migrateLegacySession();
+    return sessionStorage.getItem(AUTH_TOKEN_KEY);
   } catch {
     return null;
   }
@@ -30,18 +45,19 @@ export function getAuthToken(): string | null {
 export function setAuthToken(token: string | null) {
   try {
     if (token) {
-      localStorage.setItem(AUTH_TOKEN_KEY, token);
-      setApiAuthToken(token);
+      sessionStorage.setItem(AUTH_TOKEN_KEY, token);
     } else {
-      localStorage.removeItem(AUTH_TOKEN_KEY);
-      setApiAuthToken(null);
+      sessionStorage.removeItem(AUTH_TOKEN_KEY);
     }
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    localStorage.removeItem(SESSION_USER_KEY);
   } catch {}
 }
 
 export function getSessionUser(): UserAccount | null {
   try {
-    const raw = localStorage.getItem(SESSION_USER_KEY);
+    migrateLegacySession();
+    const raw = sessionStorage.getItem(SESSION_USER_KEY);
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
@@ -51,9 +67,9 @@ export function getSessionUser(): UserAccount | null {
 export function setSessionUser(user: UserAccount | null) {
   try {
     if (user) {
-      localStorage.setItem(SESSION_USER_KEY, JSON.stringify(user));
+      sessionStorage.setItem(SESSION_USER_KEY, JSON.stringify(user));
     } else {
-      localStorage.removeItem(SESSION_USER_KEY);
+      sessionStorage.removeItem(SESSION_USER_KEY);
     }
   } catch {}
 }
