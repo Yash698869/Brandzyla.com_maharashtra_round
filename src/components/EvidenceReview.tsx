@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { FileCheck2, Upload } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { FileCheck2, RefreshCw, Upload } from 'lucide-react';
 import { api } from '../lib/api';
 import { evidenceStatusLabel, isCurrentEvidenceReceipt, validateEvidenceFile } from '../lib/evidence';
 import type { EvidenceReceipt, EvidenceReceiptResponse, Vault } from '../lib/types';
@@ -25,27 +25,52 @@ export default function EvidenceReview({ vault, disabled }: { vault: Vault; disa
   const [results, setResults] = useState<EvidenceReceiptResponse>({ receipt: null, historical: null });
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const loadSequence = useRef(0);
   const requestId = vault.state.requestId;
 
   useEffect(() => {
-    let active = true;
+    const sequence = ++loadSequence.current;
     setResults({ receipt: null, historical: null });
-    api.evidenceReceipt(vault.state.id).then(value => { if (active) setResults(value); })
-      .catch(() => { if (active) setError('Could not load certificate evidence.'); });
-    return () => { active = false; };
+    setError(''); setBusy(false); setRefreshing(false); setFile(null);
+    api.evidenceReceipt(vault.state.id).then(value => {
+      if (loadSequence.current === sequence) setResults(value);
+    }).catch(() => {
+      if (loadSequence.current === sequence) setError('Could not load certificate evidence.');
+    });
+    return () => {
+      if (loadSequence.current === sequence) loadSequence.current++;
+    };
   }, [vault.state.id, requestId, vault.state.status]);
+
+  async function refreshEvidence() {
+    const sequence = ++loadSequence.current;
+    setError(''); setRefreshing(true);
+    try {
+      const value = await api.evidenceReceipt(vault.state.id);
+      if (loadSequence.current === sequence) setResults(value);
+    } catch (failure) {
+      if (loadSequence.current === sequence) setError(failure instanceof Error ? failure.message : 'Could not load certificate evidence.');
+    } finally {
+      if (loadSequence.current === sequence) setRefreshing(false);
+    }
+  }
 
   async function upload() {
     if (!file) return;
+    const sequence = loadSequence.current;
     setError(''); setBusy(true);
     try {
       validateEvidenceFile(file);
       await api.uploadEvidence(vault.state.id, file);
-      setResults(await api.evidenceReceipt(vault.state.id));
-      setFile(null);
-    } catch (failure) { setError(failure instanceof Error ? failure.message : 'Certificate verification failed.'); }
-    finally { setBusy(false); }
+      const value = await api.evidenceReceipt(vault.state.id);
+      if (loadSequence.current === sequence) { setResults(value); setFile(null); }
+    } catch (failure) {
+      if (loadSequence.current === sequence) setError(failure instanceof Error ? failure.message : 'Certificate verification failed.');
+    } finally {
+      if (loadSequence.current === sequence) setBusy(false);
+    }
   }
 
   const current = isCurrentEvidenceReceipt(results.receipt, vault) ? results.receipt : null;
@@ -54,6 +79,7 @@ export default function EvidenceReview({ vault, disabled }: { vault: Vault; disa
     {current && <EvidenceReceiptSummary receipt={current} historical={false}/>}
     {!current && <p className="evidence-muted">No certificate receipt for this request. DigiLocker/CRS verification awaits a genuine issuer sample.</p>}
     {results.historical && <EvidenceReceiptSummary receipt={results.historical} historical/>}
+    {(vault.state.status === 1 || vault.state.status === 2) && <button type="button" className="button secondary" disabled={disabled || busy || refreshing} onClick={refreshEvidence}><RefreshCw size={15}/>{refreshing ? 'Refreshing…' : 'Refresh evidence'}</button>}
     {vault.state.status === 1 && <div className="evidence-upload">
       <label>Upload signed PDF<input type="file" accept="application/pdf,.pdf" disabled={disabled || busy} onChange={event => { setError(''); setFile(event.target.files?.[0] ?? null); }}/></label>
       <button type="button" className="button secondary" disabled={disabled || busy || !file} onClick={upload}><Upload size={15}/>{busy ? 'Verifying…' : 'Verify certificate'}</button>

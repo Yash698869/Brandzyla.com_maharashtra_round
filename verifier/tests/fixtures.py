@@ -62,7 +62,7 @@ def _pdf(path: Path):
     )
     page[NameObject('/Resources')] = DictionaryObject({NameObject('/Font'): DictionaryObject({NameObject('/F1'): font})})
     stream = DecodedStreamObject()
-    stream.set_data(b'BT /F1 12 Tf 72 720 Td (Name: Demo Person) Tj 0 -18 Td (Identifier: DEMO-042) Tj 0 -18 Td (Date of Death: 2026-10-01) Tj ET')
+    stream.set_data(b'BT /F1 14 Tf 72 760 Td (DEMO / NOT GOVERNMENT EVIDENCE) Tj /F1 12 Tf 0 -34 Td (Name: Demo Person) Tj 0 -18 Td (Identifier: DEMO-042) Tj 0 -18 Td (Date of Death: 2026-10-01) Tj ET')
     page[NameObject('/Contents')] = writer._add_object(stream)
     with path.open('wb') as output:
         writer.write(output)

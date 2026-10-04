@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import tempfile
 import unittest
 from contextlib import redirect_stderr
@@ -10,6 +11,7 @@ from unittest.mock import patch
 
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
 from pyhanko.sign import signers
+from pypdf import PdfReader
 
 from fixtures import make_fixture
 from verifier.verify_pdf import verify_pdf
@@ -37,6 +39,23 @@ class SignedPdfVerificationTests(unittest.TestCase):
         self.assertEqual(result['claims']['name'], 'Demo Person')
         self.assertEqual(result['claims']['identifier'], 'DEMO-042')
         self.assertEqual(result['claims']['dateOfDeath'], '2026-10-01')
+        text = PdfReader(str(fixture['signed'])).pages[0].extract_text()
+        self.assertIn('DEMO / NOT GOVERNMENT EVIDENCE', text)
+
+    def test_trusted_signature_with_unapproved_issuer_stays_unverified(self):
+        fixture = make_fixture(self.directory)
+        profile = json.loads(fixture['profile'].read_text(encoding='utf-8'))
+        profile['signerFingerprints'] = ['00' * 32]
+        fixture['profile'].write_text(json.dumps(profile), encoding='utf-8')
+        result = self.check(fixture)
+        self.assertEqual(result['signature'], 'pass')
+        self.assertEqual(result['coverage'], 'pass')
+        self.assertEqual(result['chain'], 'pass')
+        self.assertEqual(result['revocation'], 'pass')
+        self.assertEqual(result['issuer'], 'indeterminate')
+        self.assertEqual(result['fields'], 'indeterminate')
+        self.assertIsNone(result['claims'])
+        self.assertIn('issuer_unverified', result['reasonCodes'])
 
     def test_byte_tamper(self):
         fixture = make_fixture(self.directory)

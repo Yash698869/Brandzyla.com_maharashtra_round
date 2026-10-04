@@ -25,10 +25,11 @@ function verifierResult() {
 async function setup(t, options = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'heirloom-evidence-api-'));
   const file = join(directory, 'relay.json');
-  const storage = await initStorage({ file, databaseUrl: '' });
+  const deploymentId = `0x${'33'.repeat(32)}`;
+  const storage = await initStorage({ file, databaseUrl: '', deploymentId });
   const owner = Wallet.createRandom(), guardian = Wallet.createRandom(), beneficiary = Wallet.createRandom();
   const config = {
-    chainId: 31337, contractAddress: `0x${'22'.repeat(20)}`, deploymentId: `0x${'33'.repeat(32)}`,
+    chainId: 31337, contractAddress: `0x${'22'.repeat(20)}`, deploymentId,
     mode: 'local', actors: [
       { address: owner.address, role: 'owner', name: 'Owner' },
       { address: guardian.address, role: 'guardian', name: 'Guardian' },
@@ -74,7 +75,7 @@ async function setup(t, options = {}) {
     const signature = await signatureWallet.signMessage(evidenceEnrollmentMessage(config, vaultId, owner.address, commitment, saltHex));
     return request('POST', '/enrollment', token, { owner: owner.address, commitment, saltHex, signature, ...extra });
   }
-  return { request, enroll, state, storage, file, owner, guardian, beneficiary };
+  return { request, enroll, state, storage, file, config, owner, guardian, beneficiary };
 }
 
 test('owner can enroll only before any recovery request, and plaintext fields are rejected', async t => {
@@ -87,6 +88,20 @@ test('owner can enroll only before any recovery request, and plaintext fields ar
   assert.equal((await ctx.enroll()).status, 409);
   assert.equal(readFileSync(ctx.file, 'utf8').includes('Demo Person'), false);
   assert.equal(readFileSync(ctx.file, 'utf8').includes('DEMO-042'), false);
+});
+
+test('enrollment aborts if recovery starts while the stored enrollment is being checked', async t => {
+  const ctx = await setup(t);
+  const getEnrollment = ctx.storage.getEvidenceEnrollment.bind(ctx.storage);
+  ctx.storage.getEvidenceEnrollment = async (...args) => {
+    ctx.state.status = 1;
+    ctx.state.requestId = 1;
+    return getEnrollment(...args);
+  };
+  const result = await ctx.enroll();
+  ctx.storage.getEvidenceEnrollment = getEnrollment;
+  assert.equal(result.status, 409);
+  assert.equal(await ctx.storage.getEvidenceEnrollment(vaultId), null);
 });
 
 test('session and wallet signature must both belong to the on-chain owner', async t => {
@@ -110,6 +125,36 @@ test('only a designated guardian can upload and read evidence for a live request
   assert.equal(read.body.receipt.status, 'test_issuer_verified');
   assert.equal(read.body.receipt.requestId, 1);
   assert.equal(read.body.receipt.checks.identity, 'pass');
+});
+
+test('an enrollment with a mismatched deployment binding cannot verify a recovery claim', async t => {
+  const ctx = await setup(t);
+  await ctx.enroll();
+  const key = `${ctx.config.deploymentId}:${vaultId.toLowerCase()}`;
+  ctx.storage.getData().evidenceEnrollments[key].deploymentId = `0x${'44'.repeat(32)}`;
+  ctx.storage.save();
+  ctx.state.status = 1; ctx.state.requestId = 1;
+  const response = await ctx.request('POST', '', 'guardian-token', pdf, 'application/pdf');
+  assert.equal(response.status, 200);
+  assert.equal(response.body.receipt.status, 'failed');
+  assert.equal(response.body.receipt.checks.identity, 'fail');
+  assert.ok(response.body.receipt.reasonCodes.includes('invalid_enrollment'));
+});
+
+test('a trusted signature with an unapproved issuer is reported without identity matching', async t => {
+  const raw = verifierResult();
+  raw.issuer = 'indeterminate';
+  raw.fields = 'indeterminate';
+  raw.claims = null;
+  raw.reasonCodes = ['issuer_unverified'];
+  const ctx = await setup(t, { verifyPdf: async () => raw });
+  await ctx.enroll();
+  ctx.state.status = 1; ctx.state.requestId = 1;
+  const response = await ctx.request('POST', '', 'guardian-token', pdf, 'application/pdf');
+  assert.equal(response.body.receipt.status, 'signed_issuer_unverified');
+  assert.equal(response.body.receipt.checks.issuer, 'indeterminate');
+  assert.equal(response.body.receipt.checks.fields, 'indeterminate');
+  assert.equal(response.body.receipt.checks.identity, 'indeterminate');
 });
 
 test('malformed and oversized uploads fail before verification', async t => {

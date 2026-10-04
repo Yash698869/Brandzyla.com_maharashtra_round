@@ -4,6 +4,13 @@ import { isDeepStrictEqual } from 'node:util';
 import pg from 'pg';
 
 const { Pool } = pg;
+const DEPLOYMENT_ID = /^0x[0-9a-f]{64}$/;
+
+function evidenceDeploymentId(value) {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (!DEPLOYMENT_ID.test(normalized)) throw new Error('Evidence storage requires a valid deploymentId');
+  return normalized;
+}
 
 function mapUserRow(row) {
   if (!row) return null;
@@ -118,15 +125,19 @@ export class PostgresStorage {
           PRIMARY KEY ("vaultId", guardian, "requestId")
         )`,
         `CREATE INDEX IF NOT EXISTS idx_releases_vault_id ON releases ("vaultId")`,
-        `CREATE TABLE IF NOT EXISTS evidence_enrollments (
-          "vaultId" TEXT PRIMARY KEY,
-          payload JSONB NOT NULL
+        // Versioned scoped tables intentionally leave legacy unscoped evidence unreadable.
+        `CREATE TABLE IF NOT EXISTS evidence_enrollments_v2 (
+          "deploymentId" TEXT NOT NULL,
+          "vaultId" TEXT NOT NULL,
+          payload JSONB NOT NULL,
+          PRIMARY KEY ("deploymentId", "vaultId")
         )`,
-        `CREATE TABLE IF NOT EXISTS evidence_receipts (
+        `CREATE TABLE IF NOT EXISTS evidence_receipts_v2 (
+          "deploymentId" TEXT NOT NULL,
           "vaultId" TEXT NOT NULL,
           "requestId" BIGINT NOT NULL,
           payload JSONB NOT NULL,
-          PRIMARY KEY ("vaultId", "requestId")
+          PRIMARY KEY ("deploymentId", "vaultId", "requestId")
         )`
       ];
 
@@ -284,33 +295,40 @@ export class PostgresStorage {
   }
 
   async getEvidenceEnrollment(vaultId) {
-    const res = await this.pool.query('SELECT payload FROM evidence_enrollments WHERE LOWER("vaultId") = LOWER($1)', [vaultId.trim()]);
+    const deploymentId = evidenceDeploymentId(this.options.deploymentId);
+    const res = await this.pool.query(
+      'SELECT payload FROM evidence_enrollments_v2 WHERE "deploymentId" = $1 AND LOWER("vaultId") = LOWER($2)',
+      [deploymentId, vaultId.trim()]
+    );
     return res.rows[0] ? mapPackageRow(res.rows[0]) : null;
   }
 
   async saveEvidenceEnrollment(vaultId, record) {
+    const deploymentId = evidenceDeploymentId(this.options.deploymentId);
     const cleanVaultId = vaultId.trim().toLowerCase();
     await this.pool.query(
-      'INSERT INTO evidence_enrollments ("vaultId", payload) VALUES ($1, $2) ON CONFLICT ("vaultId") DO NOTHING',
-      [cleanVaultId, JSON.stringify(record)]
+      'INSERT INTO evidence_enrollments_v2 ("deploymentId", "vaultId", payload) VALUES ($1, $2, $3) ON CONFLICT ("deploymentId", "vaultId") DO NOTHING',
+      [deploymentId, cleanVaultId, JSON.stringify(record)]
     );
     const saved = await this.getEvidenceEnrollment(cleanVaultId);
     if (!isDeepStrictEqual(saved, record)) throw new Error('Evidence identity is already enrolled and immutable');
   }
 
   async getEvidenceReceipt(vaultId, requestId) {
+    const deploymentId = evidenceDeploymentId(this.options.deploymentId);
     const res = await this.pool.query(
-      'SELECT payload FROM evidence_receipts WHERE LOWER("vaultId") = LOWER($1) AND "requestId" = $2',
-      [vaultId.trim(), Number(requestId)]
+      'SELECT payload FROM evidence_receipts_v2 WHERE "deploymentId" = $1 AND LOWER("vaultId") = LOWER($2) AND "requestId" = $3',
+      [deploymentId, vaultId.trim(), Number(requestId)]
     );
     return res.rows[0] ? mapPackageRow(res.rows[0]) : null;
   }
 
   async saveEvidenceReceipt(vaultId, requestId, receipt) {
+    const deploymentId = evidenceDeploymentId(this.options.deploymentId);
     await this.pool.query(
-      `INSERT INTO evidence_receipts ("vaultId", "requestId", payload) VALUES ($1, $2, $3)
-       ON CONFLICT ("vaultId", "requestId") DO UPDATE SET payload = EXCLUDED.payload`,
-      [vaultId.trim().toLowerCase(), Number(requestId), JSON.stringify(receipt)]
+      `INSERT INTO evidence_receipts_v2 ("deploymentId", "vaultId", "requestId", payload) VALUES ($1, $2, $3, $4)
+       ON CONFLICT ("deploymentId", "vaultId", "requestId") DO UPDATE SET payload = EXCLUDED.payload`,
+      [deploymentId, vaultId.trim().toLowerCase(), Number(requestId), JSON.stringify(receipt)]
     );
   }
 
@@ -481,11 +499,12 @@ export class FileStorage {
   }
 
   async getEvidenceEnrollment(vaultId) {
-    return this.data.evidenceEnrollments?.[vaultId.trim().toLowerCase()] ?? null;
+    const key = `${evidenceDeploymentId(this.options.deploymentId)}:${vaultId.trim().toLowerCase()}`;
+    return this.data.evidenceEnrollments?.[key] ?? null;
   }
 
   async saveEvidenceEnrollment(vaultId, record) {
-    const key = vaultId.trim().toLowerCase();
+    const key = `${evidenceDeploymentId(this.options.deploymentId)}:${vaultId.trim().toLowerCase()}`;
     const prior = this.data.evidenceEnrollments?.[key];
     if (prior) {
       if (!isDeepStrictEqual(prior, record)) throw new Error('Evidence identity is already enrolled and immutable');
@@ -495,11 +514,12 @@ export class FileStorage {
   }
 
   async getEvidenceReceipt(vaultId, requestId) {
-    return this.data.evidenceReceipts?.[`${vaultId.trim().toLowerCase()}:${Number(requestId)}`] ?? null;
+    const key = `${evidenceDeploymentId(this.options.deploymentId)}:${vaultId.trim().toLowerCase()}:${Number(requestId)}`;
+    return this.data.evidenceReceipts?.[key] ?? null;
   }
 
   async saveEvidenceReceipt(vaultId, requestId, receipt) {
-    const key = `${vaultId.trim().toLowerCase()}:${Number(requestId)}`;
+    const key = `${evidenceDeploymentId(this.options.deploymentId)}:${vaultId.trim().toLowerCase()}:${Number(requestId)}`;
     this.save({ ...this.data, evidenceReceipts: { ...this.data.evidenceReceipts, [key]: receipt } });
   }
 

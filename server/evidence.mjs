@@ -20,6 +20,16 @@ class EvidenceError extends Error {
 
 const same = (a, b) => typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase();
 
+function isBoundEnrollment(record, config, vaultId, owner) {
+  if (!record || !same(record.deploymentId, config.deploymentId) || !same(record.vaultId, vaultId) ||
+      !same(record.owner, owner) || !HASH.test(record.commitment || '') || !SALT.test(record.saltHex || '') ||
+      typeof record.signature !== 'string') return false;
+  try {
+    const message = evidenceEnrollmentMessage(config, vaultId, owner, record.commitment, record.saltHex);
+    return same(verifyMessage(message, record.signature), owner);
+  } catch { return false; }
+}
+
 export async function runPdfVerifier(path, profileId, signal) {
   const executable = process.env.HEIRLOOM_PYTHON || 'python';
   const testProfile = process.env.HEIRLOOM_TEST_EVIDENCE_PROFILE || join(projectRoot, '.runtime', 'evidence-demo', 'profile.json');
@@ -102,8 +112,12 @@ export function createEvidenceHandlers({ storage, config, vaultState, verifyPdf 
       if (!same(verifyMessage(message, body.signature), state.owner)) throw new Error('wrong signer');
     } catch { throw new EvidenceError(403, 'invalid_owner_signature'); }
     const prior = await storage.getEvidenceEnrollment(id);
+    const latest = await vaultState(id);
+    if (!same(address, latest?.owner) || Number(latest?.status) !== 0 || Number(latest?.requestId) !== 0) {
+      throw new EvidenceError(409, 'enrollment_closed');
+    }
     const record = {
-      vaultId: id, owner: state.owner.toLowerCase(), commitment: body.commitment.toLowerCase(),
+      vaultId: id, deploymentId: config.deploymentId.toLowerCase(), owner: state.owner.toLowerCase(), commitment: body.commitment.toLowerCase(),
       saltHex: body.saltHex.toLowerCase(), signature: body.signature,
       createdAt: prior?.createdAt ?? Date.now()
     };
@@ -117,7 +131,7 @@ export function createEvidenceHandlers({ storage, config, vaultState, verifyPdf 
     if (!same(address, state.owner) && !state.guardians?.some(value => same(value, address))) {
       throw new EvidenceError(403, 'vault_role_required');
     }
-    res.json({ enrolled: Boolean(await storage.getEvidenceEnrollment(id)), vaultId: id });
+    res.json({ enrolled: isBoundEnrollment(await storage.getEvidenceEnrollment(id), config, id, state.owner), vaultId: id });
   }
 
   async function locked(key, fn) {
@@ -171,7 +185,10 @@ export function createEvidenceHandlers({ storage, config, vaultState, verifyPdf 
           ? raw.reasonCodes.filter(value => typeof value === 'string' && /^[a-z_]{1,48}$/.test(value)).slice(0, 12)
           : [];
         if (!enrollment) reasonCodes.push('missing_enrollment');
-        else if (CHECK_NAMES.every(name => checks[name] === 'pass') && raw?.claims?.name && raw?.claims?.identifier) {
+        else if (!isBoundEnrollment(enrollment, config, id, state.owner)) {
+          identity = 'fail';
+          reasonCodes.push('invalid_enrollment');
+        } else if (CHECK_NAMES.every(name => checks[name] === 'pass') && raw?.claims?.name && raw?.claims?.identifier) {
           const candidate = await evidenceCommitment(raw.claims.name, raw.claims.identifier, enrollment.saltHex);
           identity = candidate === enrollment.commitment ? 'pass' : 'fail';
           if (identity === 'fail') reasonCodes.push('identity_mismatch');

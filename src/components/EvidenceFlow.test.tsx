@@ -25,6 +25,7 @@ describe('certificate evidence panels', () => {
   it('shows guardian upload and a clearly marked test issuer receipt', () => {
     const upload = renderToStaticMarkup(<EvidenceReview vault={{ ...vault, state: { ...vault.state, status: 1, requestId: 1 } }} disabled={false}/>);
     expect(upload).toContain('Upload signed PDF');
+    expect(upload).toContain('Refresh evidence');
     const review = renderToStaticMarkup(<EvidenceReceiptSummary receipt={receipt} historical={false}/>);
     expect(review).toContain('Test issuer verified');
     expect(review).toContain('DEMO / NOT GOVERNMENT EVIDENCE');

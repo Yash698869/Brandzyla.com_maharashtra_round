@@ -129,8 +129,8 @@ def verify_pdf(path: str, profile_id: str) -> dict:
                 return _reason(result, 'revoked_signer' if result['revocation'] == 'fail' else 'revocation_unknown')
             result['revocation'] = 'pass'
             if fingerprint not in profile['signer_fingerprints']:
-                result['issuer'] = 'fail'
-                return _reason(result, 'issuer_mismatch')
+                result['issuer'] = 'indeterminate'
+                return _reason(result, 'issuer_unverified')
             result['issuer'] = 'pass'
         claims = _extract_test_claims(path)
         if claims is None:

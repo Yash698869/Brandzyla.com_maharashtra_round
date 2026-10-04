@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { newDb } from 'pg-mem';
-import { initStorage } from '../server/storage.mjs';
+import { initStorage, PostgresStorage } from '../server/storage.mjs';
 
 const vaultId = `0x${'AA'.repeat(32)}`;
 const enrollment = {
@@ -53,9 +53,9 @@ test('file storage keeps immutable enrollment and request-scoped receipts throug
   const dir = mkdtempSync(join(tmpdir(), 'heirloom-evidence-storage-'));
   try {
     const file = join(dir, 'relay.json');
-    const storage = await initStorage({ file, databaseUrl: '' });
+    const storage = await initStorage({ file, databaseUrl: '', deploymentId: `0x${'11'.repeat(32)}` });
     await exerciseStorage(storage);
-    const reopened = await initStorage({ file, databaseUrl: '' });
+    const reopened = await initStorage({ file, databaseUrl: '', deploymentId: `0x${'11'.repeat(32)}` });
     assert.deepEqual(await reopened.getEvidenceEnrollment(vaultId), enrollment);
     assert.deepEqual(await reopened.getEvidenceReceipt(vaultId, 1), receipt);
   } finally {
@@ -66,7 +66,32 @@ test('file storage keeps immutable enrollment and request-scoped receipts throug
 test('PostgreSQL storage keeps immutable enrollment and request-scoped receipts', async () => {
   const db = newDb();
   const Pool = db.adapters.createPg().Pool;
-  const storage = await initStorage({ pool: new Pool() });
+  const storage = await initStorage({ pool: new Pool(), deploymentId: `0x${'11'.repeat(32)}` });
   try { await exerciseStorage(storage); }
   finally { await storage.close(); }
+});
+
+test('PostgreSQL evidence is isolated between deployments sharing one database', async () => {
+  const db = newDb();
+  const Pool = db.adapters.createPg().Pool;
+  const pool = new Pool();
+  const first = await initStorage({ pool, deploymentId: `0x${'11'.repeat(32)}` });
+  const second = new PostgresStorage(pool, { deploymentId: `0x${'22'.repeat(32)}` });
+  try {
+    await first.saveEvidenceEnrollment(vaultId, enrollment);
+    await first.saveEvidenceReceipt(vaultId, 1, receipt);
+    assert.deepEqual(await first.getEvidenceEnrollment(vaultId), enrollment);
+    assert.deepEqual(await first.getEvidenceReceipt(vaultId, 1), receipt);
+    assert.equal(await second.getEvidenceEnrollment(vaultId), null);
+    assert.equal(await second.getEvidenceReceipt(vaultId, 1), null);
+
+    const secondEnrollment = { ...enrollment, owner: `0x${'ee'.repeat(20)}` };
+    const secondReceipt = { ...receipt, status: 'failed' };
+    await second.saveEvidenceEnrollment(vaultId, secondEnrollment);
+    await second.saveEvidenceReceipt(vaultId, 1, secondReceipt);
+    assert.deepEqual(await second.getEvidenceEnrollment(vaultId), secondEnrollment);
+    assert.deepEqual(await second.getEvidenceReceipt(vaultId, 1), secondReceipt);
+    assert.deepEqual(await first.getEvidenceEnrollment(vaultId), enrollment);
+    assert.deepEqual(await first.getEvidenceReceipt(vaultId, 1), receipt);
+  } finally { await first.close(); }
 });
