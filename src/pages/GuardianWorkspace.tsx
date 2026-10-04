@@ -22,6 +22,8 @@ import {
 } from 'lucide-react';
 import { Brand } from '../components/Brand';
 import UserMenu from '../components/UserMenu';
+import { RecoveryPolicyStatus } from '../components/SuccessionGraph';
+import { isBeneficiary, selectedRecipient } from '../lib/workspace-policy';
 import { useRouter } from '../lib/router';
 import type { Config, Actor, Vault, TimelineEvent, IdentityRecord } from '../lib/types';
 import { formatActorName, type UserAccount } from '../lib/auth';
@@ -78,13 +80,20 @@ export default function GuardianWorkspace({
   const { path, navigate } = useRouter();
 
   const [search, setSearch] = useState('');
+  const [actionError, setActionError] = useState('');
+
+  async function perform(action: (vault: Vault) => Promise<void>, vault: Vault) {
+    setActionError('');
+    try { await action(vault); }
+    catch (error) { setActionError(error instanceof Error ? error.message : 'Unable to confirm guardian action. Refresh and try again.'); }
+  }
 
   // Filter vaults where connected wallet is one of the designated guardians
   const guardianVaults = vaults.filter(v =>
     v.state.guardians.some(g => same(g, currentUser.address))
   );
   const ownedVaults = vaults.filter(v => same(v.state.owner, currentUser.address));
-  const beneficiaryVaults = vaults.filter(v => same(v.state.beneficiary, currentUser.address));
+  const beneficiaryVaults = vaults.filter(v => isBeneficiary(v.state, currentUser.address));
 
   // Determine active tab
   const activeTab: 'inbox' | 'vaults' | 'activity' = path.includes('/vaults')
@@ -102,7 +111,7 @@ export default function GuardianWorkspace({
     v => v.state.status === 1 && v.state.approved.some(a => same(a, currentUser.address))
   );
 
-  const finalizedReleases = guardianVaults.filter(v => v.state.status === 2);
+  const finalizedReleases = guardianVaults.filter(v => v.state.status === 2 && v.state.approved.some(a => same(a, currentUser.address)));
 
   const visibleVaults = guardianVaults.filter(
     v =>
@@ -205,7 +214,7 @@ export default function GuardianWorkspace({
           <span className="note-spark">✳</span>
           <h4>Guardian responsibility.</h4>
           <p>
-            Approve only after independently verifying the owner’s incapacity. Your attestation cannot be undone.
+            Independently verify circumstances off-chain before approving. The contract records approvals; it does not prove death or incapacity.
           </p>
           <button type="button" onClick={onOpenHelp}>
             Guardian Duties <ArrowUpRight size={14} />
@@ -252,6 +261,8 @@ export default function GuardianWorkspace({
         </header>
 
         <main>
+          {actionError && <div className="inline-error" role="alert">{actionError}</div>}
+          {offline && <div className="inline-error" role="status">Chain connection unavailable. Showing the last confirmed state; refresh before taking action.</div>}
           {/* Heading */}
           <div className="page-heading">
             <div>
@@ -307,10 +318,10 @@ export default function GuardianWorkspace({
                 <CheckCircle size={20} />
               </span>
               <div>
-                <span>Finalized & released</span>
+                <span>Finalized requests</span>
                 <strong>
                   {finalizedReleases.length.toString().padStart(2, '0')}
-                  <small>shares delivered</small>
+                  <small>approved for share release</small>
                 </strong>
               </div>
               <span className={`stat-dot ${finalizedReleases.length ? 'green' : ''}`} />
@@ -332,7 +343,7 @@ export default function GuardianWorkspace({
                           <h3>Recovery Requested: {v.label}</h3>
                           <p>
                             Owner: <strong>{nameOf(v.state.owner)}</strong> ({short(v.state.owner)}) ·
-                            Beneficiary: <strong>{nameOf(v.state.beneficiary)}</strong>
+                            Selected recipient: <strong>{nameOf(selectedRecipient(v.state))}</strong>
                           </p>
                         </div>
                         <span className="status-badge status-1">Attestation Required</span>
@@ -340,24 +351,25 @@ export default function GuardianWorkspace({
 
                       <div className="attestation-details-box">
                         <p>
-                          <strong>Independent Verification Notice:</strong> By submitting your approval, you
-                          confirm that you have independently verified that the vault owner is deceased or
-                          incapacitated. Two independent guardian approvals are required to initiate the
-                          cancellation window.
+                          <strong>Independent verification:</strong> Verify the owner’s circumstances off-chain
+                          before approving this request and its selected recipient. The contract records your
+                          approval; it does not establish death or incapacity. Two approvals start the full
+                          owner cancellation window.
                         </p>
                         <div className="attestation-meta-row">
                           <span>Request ID: #{v.state.requestId}</span>
                           <span>Quorum: {v.state.approvalCount} / 2 approvals</span>
                           <span>Challenge window: {duration(v.state.challenge)}</span>
                         </div>
+                        <RecoveryPolicyStatus vault={v} time={time} block={block} offline={offline} nameOf={nameOf}/>
                       </div>
 
                       <div className="attestation-card-actions">
                         <button
                           type="button"
                           className="button primary"
-                          disabled={!!busy}
-                          onClick={() => onApproveRecovery(v)}
+                          disabled={!!busy || offline}
+                          onClick={() => perform(onApproveRecovery, v)}
                         >
                           <FileCheck2 size={16} />
                           Attest & Confirm Approval
@@ -404,9 +416,10 @@ export default function GuardianWorkspace({
                         <p>
                           Quorum: {v.state.approvalCount} / 2 approvals.
                           {v.state.quorumAt
-                            ? ` Challenge window active (${duration(Math.max(0, v.state.quorumAt + v.state.challenge - time))} remaining).`
+                            ? ` ${time >= v.state.quorumAt + v.state.challenge ? 'Cancellation window elapsed in the confirmed block.' : `Cancellation window has ${duration(v.state.quorumAt + v.state.challenge - time)} remaining at the confirmed block.`}`
                             : ' Waiting for second guardian.'}
                         </p>
+                        <RecoveryPolicyStatus vault={v} time={time} block={block} offline={offline} nameOf={nameOf}/>
                       </div>
                     ))}
 
@@ -417,13 +430,14 @@ export default function GuardianWorkspace({
                           <span className="status-badge status-2">Recovery Finalized</span>
                         </div>
                         <p>
-                          Recovery has finalized on-chain. Deliver your encrypted key share to the beneficiary.
+                          Recovery finalized for {nameOf(selectedRecipient(v.state))}. Deliver your encrypted key share only to this selected recipient.
                         </p>
+                        <RecoveryPolicyStatus vault={v} time={time} block={block} offline={offline} nameOf={nameOf}/>
                         <button
                           type="button"
                           className="button primary small-button"
-                          disabled={!!busy}
-                          onClick={() => onReleaseShare(v)}
+                          disabled={!!busy || offline}
+                          onClick={() => perform(onReleaseShare, v)}
                         >
                           <Send size={13} />
                           Release Encrypted Share
@@ -475,14 +489,15 @@ export default function GuardianWorkspace({
                             <UsersRound size={14} /> 2 of 3 quorum
                           </span>
                           <span>
-                            {isApprovedByMe ? '✓ You approved' : 'Waiting for claim'}
+                            {isApprovedByMe ? '✓ You approved' : v.state.status === 0 ? 'Waiting for claim' : 'You have not approved'}
                           </span>
                         </div>
 
                         <div className="card-bottom">
-                          <span>Beneficiary: <strong>{nameOf(v.state.beneficiary)}</strong></span>
+                          <span>{v.state.status === 0 ? 'Primary: ' : 'Selected: '}<strong>{nameOf(v.state.status === 0 ? v.state.beneficiary : selectedRecipient(v.state))}</strong></span>
                           <ArrowUpRight size={17} />
                         </div>
+                        <RecoveryPolicyStatus vault={v} time={time} block={block} offline={offline} nameOf={nameOf}/>
                       </div>
                     );
                   })}

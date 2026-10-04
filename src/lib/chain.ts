@@ -43,16 +43,27 @@ export async function connectWallet(config: Config) {
 }
 export function readContract(config: Config) { return new Contract(config.contractAddress, config.abi, readProvider); }
 export async function writableContract(config: Config, address: string) { return new Contract(config.contractAddress, config.abi, await signerFor(config, address)); }
-export async function getVault(config: Config, id: string): Promise<VaultState> {
-  const contract = readContract(config), v = await contract.getVault(id);
+export async function getVault(config: Config, id: string, blockTag?: number): Promise<VaultState> {
+  blockTag ??= (await chainTime(config)).blockNumber;
+  const contract = readContract(config), v = await contract.getVault(id, { blockTag });
   const guardians = [...v.guardians] as string[];
-  const approved = Number(v.status) === 0 ? [] : (await Promise.all(guardians.map(async g => await contract.hasApproved(id, v.requestId, g) ? g : ''))).filter(Boolean);
-  return { id, owner: v.owner, beneficiary: v.beneficiary, guardians, inactivity: Number(v.inactivity), challenge: Number(v.challenge), lastCheckIn: Number(v.lastCheckIn), quorumAt: Number(v.quorumAt), finalizedAt: Number(v.finalizedAt), requestId: Number(v.requestId), approvalCount: Number(v.approvalCount), status: Number(v.status), commitment: v.commitment, beneficiaryKeyHash: v.beneficiaryKeyHash, approved };
+  const approved = Number(v.status) === 0 ? [] : (await Promise.all(guardians.map(async g => await contract.hasApproved(id, v.requestId, g, { blockTag }) ? g : ''))).filter(Boolean);
+  return { id, owner: v.owner, beneficiary: v.beneficiary, guardians, inactivity: Number(v.inactivity), challenge: Number(v.challenge), lastCheckIn: Number(v.lastCheckIn), quorumAt: Number(v.quorumAt), finalizedAt: Number(v.finalizedAt), requestId: Number(v.requestId), approvalCount: Number(v.approvalCount), status: Number(v.status), commitment: v.commitment, beneficiaryKeyHash: v.beneficiaryKeyHash, approved,
+    policyVersion: Number(v.policyVersion ?? 1), backupBeneficiary: v.backupBeneficiary, backupWaitingDuration: Number(v.backupWaitingDuration ?? 0), backupBeneficiaryKeyHash: v.backupBeneficiaryKeyHash, selectedBeneficiary: v.selectedBeneficiary ?? (Number(v.status) !== 0 ? v.beneficiary : undefined) };
 }
-export async function chainTime() { const block = await readProvider.getBlock('latest'); if (!block) throw new Error('Chain unavailable'); return { timestamp: block.timestamp, blockNumber: block.number, observedAtMs: Date.now() }; }
-export async function history(config: Config): Promise<TimelineEvent[]> {
+export async function chainTime(config?: Config) {
+  const latestBlock = await readProvider.getBlock('latest');
+  if (!latestBlock) throw new Error('Chain unavailable');
+  const observedAtMs = Date.now();
+  const blockNumber = latestBlock.number - (config?.confirmations ?? 1) + 1;
+  if (blockNumber < (config?.deploymentBlock ?? 0)) throw new Error('Wait for deployment confirmations');
+  const confirmedBlock = await readProvider.getBlock(blockNumber);
+  if (!confirmedBlock) throw new Error('Chain unavailable');
+  return { timestamp: latestBlock.timestamp, blockNumber: confirmedBlock.number, observedAtMs };
+}
+export async function history(config: Config, blockTag?: number): Promise<TimelineEvent[]> {
   const contract = readContract(config);
-  const logs = await contract.queryFilter('*', config.deploymentBlock);
+  const logs = await contract.queryFilter('*', config.deploymentBlock, blockTag ?? (await chainTime(config)).blockNumber);
   const times = new Map<number, number>();
   const result: TimelineEvent[] = [];
   for (const raw of logs) {
@@ -78,7 +89,9 @@ export async function verifyReleaseFinality(config: Config, vaultId: string, req
 }
 export function friendlyError(error: any) {
   const messages: Record<string, string> = {
-    OwnerStillActive: 'The owner is still within their check-in period. Recovery is blocked.',
+    OwnerStillActive: 'The owner inactivity period or this beneficiary’s waiting period has not expired.',
+    BackupNotEligible: 'The primary beneficiary’s exclusive window is still open. Wait until the backup deadline.',
+    InvalidPolicy: 'Choose distinct owner, beneficiaries and guardians, separate beneficiary keys, and valid policy durations.',
     Unauthorized: 'This account is not authorized for that action.',
     ChallengeActive: 'The owner’s cancellation window is still open. Recovery must wait.',
     QuorumNotMet: 'Two independent guardian approvals are required.',

@@ -3,6 +3,7 @@ import { JsonRpcProvider, keccak256 } from 'ethers';
 import { readFileSync, existsSync, mkdirSync, openSync, writeFileSync } from 'node:fs';
 import { validateDeployment } from '../shared/chain-safety.mjs';
 import { deploy } from './deploy.mjs';
+import { compileContract } from './compile.mjs';
 
 if (existsSync('.env') && typeof process.loadEnvFile === 'function') {
   try { process.loadEnvFile(); } catch { }
@@ -18,6 +19,7 @@ function stop() { children.forEach(c => c.kill()); process.exit(); }
 process.on('SIGINT', stop); process.on('SIGTERM', stop);
 
 if (!process.argv.includes('--public')) {
+  const currentArtifact = compileContract();
   const probe = new JsonRpcProvider('http://127.0.0.1:8545', 31337, { staticNetwork: true, cacheTimeout: -1 });
   let running = false;
   try { running = (await probe.send('eth_chainId', [])) === '0x7a69'; } catch {}
@@ -36,12 +38,13 @@ if (!process.argv.includes('--public')) {
       const code = await probe.getCode(existing.contractAddress), block = await probe.getBlock(existing.deploymentBlock);
       // A one-time config migration is safe only when the original deployment block still matches.
       if (!existing.codeHash && code !== '0x' && block?.hash === existing.deploymentId) { existing.codeHash = keccak256(code); writeFileSync('.runtime/deployment.json', JSON.stringify(existing, null, 2)); }
-      validateDeployment(existing, { chainId: Number(await probe.send('eth_chainId', [])), blockHash: block?.hash, codeHash: keccak256(code) }); reusable = true;
+      validateDeployment(existing, { chainId: Number(await probe.send('eth_chainId', [])), blockHash: block?.hash, codeHash: keccak256(code) });
+      reusable = keccak256(code) === keccak256(currentArtifact.deployedBytecode) && existing.actors?.length === 6;
     } catch {}
   }
   if (!reusable) await deploy();
   probe.destroy();
-  console.log('Hardhat demo ready: chain 31337, five funded local wallets, no test ETH required.');
+  console.log('Hardhat demo ready: chain 31337, six funded local wallets including primary and backup, no test ETH required.');
 } else {
   const file = existsSync('.runtime/sepolia-deployment.json') ? '.runtime/sepolia-deployment.json' : '.runtime/deployment.json';
   if (!existsSync(file)) throw new Error('Deploy to Sepolia and import its configuration before using --public');

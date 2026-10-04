@@ -92,6 +92,7 @@ export function getDefaultDemoUsers(actors: Actor[] = []): UserAccount[] {
     { email: 'james@heirloom.local', name: 'James Wilson', role: 'guardian', initials: 'JW' },
     { email: 'priya@heirloom.local', name: 'Priya Shah', role: 'guardian', initials: 'PS' },
   ];
+  if (actors.length > 5) defaultList.push({ email: 'taylor@heirloom.local', name: 'Taylor Morgan', role: 'beneficiary', initials: 'TM' });
 
   return defaultList.map((d, index) => {
     const actor = actors.find(a => a.name.toLowerCase() === d.name.toLowerCase()) || actors[index];

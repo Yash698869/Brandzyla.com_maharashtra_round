@@ -61,6 +61,22 @@ describe('recovery guidance follows the on-chain gates', () => {
     expect(guidance(finalized, guardians[2], 240, []).action).toBeUndefined();
     expect(guidance(finalized, beneficiary, 240, guardians.slice(0, 2)).action).toBe('decrypt');
   });
+
+  it('gives the backup its later deadline and reserves an active request for its selected beneficiary', () => {
+    const backup = '0x7777777777777777777777777777777777777777';
+    const succession = { ...vault, policyVersion: 2, backupBeneficiary: backup, backupWaitingDuration: 120 };
+    expect(guidance(succession, backup, 160)).toMatchObject({ waitSeconds: 120 });
+    expect(guidance(succession, backup, 279).action).toBeUndefined();
+    expect(guidance(succession, backup, 280).action).toBe('requestRecovery');
+    const pending = { ...succession, status: 1, requestId: 1, selectedBeneficiary: backup, approvalCount: 2, approved: guardians.slice(0, 2), quorumAt: 280 };
+    expect(guidance(pending, guardians[2], 300)).toMatchObject({ action: 'approveRecovery', waitSeconds: 10 });
+    expect(guidance(pending, guardians[2], 310).action).toBe('approveRecovery');
+    expect(guidance(pending, beneficiary, 400).action).toBeUndefined();
+    expect(guidance(pending, backup, 309).action).toBeUndefined();
+    expect(guidance(pending, backup, 310).action).toBe('finalizeRecovery');
+    expect(guidance({ ...pending, status: 2 }, beneficiary, 400, guardians.slice(0, 2)).action).toBeUndefined();
+    expect(guidance({ ...pending, status: 2 }, backup, 400, guardians.slice(0, 2)).action).toBe('decrypt');
+  });
 });
 
 describe('recovery kits', () => {

@@ -41,11 +41,15 @@ function verifyWalletProof({ action, email, address, challenge, signature }) {
 function deployment(p) { if (p.binding.chainId !== config.chainId || !same(p.binding.contract, config.contractAddress)) throw new Error('Wrong chain or contract'); }
 function validSignature(message, signature, address) { if (!same(verifyMessage(message, signature), address)) throw new Error('Invalid wallet signature'); }
 async function vaultState(id) {
-  const v = await contract.getVault(id);
+  const tip = await provider.getBlockNumber();
+  const blockTag = tip - config.confirmations + 1;
+  if (blockTag < config.deploymentBlock) throw new Error('Wait for deployment confirmations');
+  const v = await contract.getVault(id, { blockTag });
   const guardians = [...v.guardians];
   const approved = [];
-  for (const g of guardians) if (await contract.hasApproved(id, v.requestId, g)) approved.push(g);
-  return { beneficiary: v.beneficiary, beneficiaryKeyHash: v.beneficiaryKeyHash, commitment: v.commitment, guardians, approved, requestId: Number(v.requestId), status: Number(v.status), finalizedAt: Number(v.finalizedAt) };
+  for (const g of guardians) if (Number(v.status) !== 0 && await contract.hasApproved(id, v.requestId, g, { blockTag })) approved.push(g);
+  return { beneficiary: v.beneficiary, beneficiaryKeyHash: v.beneficiaryKeyHash, commitment: v.commitment, guardians, approved, requestId: Number(v.requestId), status: Number(v.status), finalizedAt: Number(v.finalizedAt),
+    policyVersion: Number(v.policyVersion ?? 1), backupBeneficiary: v.backupBeneficiary, backupBeneficiaryKeyHash: v.backupBeneficiaryKeyHash, backupWaitingDuration: Number(v.backupWaitingDuration ?? 0), inactivity: Number(v.inactivity), challenge: Number(v.challenge), selectedBeneficiary: v.selectedBeneficiary ?? (Number(v.status) === 2 ? v.beneficiary : undefined) };
 }
 const app = express(); app.disable('x-powered-by'); app.use(express.json({ limit: '15mb' }));
 app.use((req, res, next) => {
