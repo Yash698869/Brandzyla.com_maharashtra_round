@@ -8,4 +8,6 @@ public/heirloom-contract.json
 .env
 *.log
 *.tsbuildinfo
+__pycache__/
+*.pyc
 .agents/
