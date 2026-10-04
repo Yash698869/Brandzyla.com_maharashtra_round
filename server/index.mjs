@@ -6,6 +6,7 @@ import { randomBytes, randomInt, pbkdf2Sync } from 'node:crypto';
 import { digest, identityMessage, releaseMessage } from '../shared/protocol.mjs';
 import { validatePackageShape, validateIdentity, validateReleaseContext, validateRecoveryKit, validateRegistration } from './validation.mjs';
 import { initStorage } from './storage.mjs';
+import { createEvidenceHandlers } from './evidence.mjs';
 
 if (existsSync('.env') && typeof process.loadEnvFile === 'function') {
   try { process.loadEnvFile(); } catch { }
@@ -48,10 +49,11 @@ async function vaultState(id) {
   const guardians = [...v.guardians];
   const approved = [];
   for (const g of guardians) if (Number(v.status) !== 0 && await contract.hasApproved(id, v.requestId, g, { blockTag })) approved.push(g);
-  return { beneficiary: v.beneficiary, beneficiaryKeyHash: v.beneficiaryKeyHash, commitment: v.commitment, guardians, approved, requestId: Number(v.requestId), status: Number(v.status), finalizedAt: Number(v.finalizedAt),
+  return { owner: v.owner, beneficiary: v.beneficiary, beneficiaryKeyHash: v.beneficiaryKeyHash, commitment: v.commitment, guardians, approved, requestId: Number(v.requestId), status: Number(v.status), finalizedAt: Number(v.finalizedAt),
     policyVersion: Number(v.policyVersion ?? 1), backupBeneficiary: v.backupBeneficiary, backupBeneficiaryKeyHash: v.backupBeneficiaryKeyHash, backupWaitingDuration: Number(v.backupWaitingDuration ?? 0), inactivity: Number(v.inactivity), challenge: Number(v.challenge), selectedBeneficiary: v.selectedBeneficiary ?? (Number(v.status) === 2 ? v.beneficiary : undefined) };
 }
 const app = express(); app.disable('x-powered-by'); app.use(express.json({ limit: '15mb' }));
+const evidence = createEvidenceHandlers({ storage, config, vaultState });
 app.use((req, res, next) => {
   const origin = req.get('origin');
   if (origin && !['http://127.0.0.1:5173', 'http://localhost:5173', 'http://127.0.0.1:5174', 'http://localhost:5174', 'http://127.0.0.1:4173', 'http://localhost:4173', 'http://127.0.0.1:3001', 'http://127.0.0.1:3002'].includes(origin)) return res.status(403).json({ error: 'Untrusted request origin' });
@@ -163,6 +165,10 @@ app.post('/api/clock', route(async (req, res) => {
   const seconds = Number(req.body.seconds); if (!Number.isInteger(seconds) || seconds < 1 || seconds > 31536000) throw new Error('Invalid clock advance');
   await provider.send('evm_increaseTime', [seconds]); await provider.send('evm_mine', []); res.json({ ok: true });
 }));
+app.post('/api/evidence/:vaultId/enrollment', route(evidence.enroll));
+app.get('/api/evidence/:vaultId/enrollment', route(evidence.getEnrollment));
+app.post('/api/evidence/:vaultId', express.raw({ type: 'application/pdf', limit: '10mb' }), route(evidence.upload));
+app.get('/api/evidence/:vaultId', route(evidence.getCurrentReceipt));
 
 const otps = new Map();
 const verifiedEmails = new Map();
@@ -649,7 +655,7 @@ app.use((req, res, next) => {
   }
   next();
 });
-app.use((error, _req, res, _next) => { res.status(400).json({ error: error.reason ?? error.shortMessage ?? error.message ?? 'Request rejected' }); });
+app.use((error, _req, res, _next) => { res.status(error.status ?? 400).json({ error: error.reason ?? error.shortMessage ?? error.message ?? 'Request rejected' }); });
 const port = Number(process.env.HEIRLOOM_RELAY_PORT ?? 3001);
 const server = app.listen(port, '127.0.0.1', () => console.log(`Encrypted relay → http://127.0.0.1:${port} (${config.mode})`));
 
